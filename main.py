@@ -281,6 +281,8 @@ if __name__ == '__main__':
     parser.add_argument("--ch_mul", type=str, default="(1,2,2,4)", help="channel_multipliers in the Unet")
     parser.add_argument("--is_attn", type=str, default="(0,0,1,1)", help="Whether the block has self-attention")
     parser.add_argument("--var_schedule", type=str, default="linear", help="Diffusion variance schedule :- linear or cosine")
+    parser.add_argument("--beta_start", type=float, default=0.0001, help="variance schedule start")
+    parser.add_argument("--beta_end", type=float, default=0.02, help="variance schedule end")
     
     args = parser.parse_args()
     
