@@ -36,7 +36,7 @@ def make_beta_schedule(schedule='linear',num_timesteps=1000,linear_start=0.0001,
 
 class DDIMSampler():
     
-    def __init__(self,diff_timesteps,inf_timesteps,eta=0.0,beta_start=0.0001,beta_end=0.08,
+    def __init__(self,diff_timesteps,inf_timesteps,eta=0.0,beta_start=0.0001,beta_end=0.02,
                  var_schedule='linear',cosine_s = 0.01):
         super().__init__()
         

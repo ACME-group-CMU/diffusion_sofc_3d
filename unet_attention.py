@@ -190,8 +190,8 @@ class Upsample(nn.Module):
     def __init__(self, n_channels):
         super().__init__()
         #self.conv = nn.ConvTranspose3d(n_channels, n_channels, 4, 2, 1)
-        self.conv = nn.Sequential(nn.Upsample(scale_factor=2),
-                                  nn.Conv3d(n_channels,n_channels,kernel_size=4,stride=1,padding='same'))
+        self.conv = nn.Sequential(nn.Upsample(scale_factor=2,mode='nearest'),
+                                  nn.Conv3d(n_channels,n_channels,kernel_size=3,stride=1,padding='same'))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         # `t` is not used, but it's kept in the arguments because for the attention layer function signature
