@@ -231,7 +231,7 @@ class Diffusion(LightningModule):
     def configure_optimizers(self):
         
         lr = self.hparams.lr
-        optimizer = AdamW(self.unet.parameters(), lr=lr, weight_decay=0.0001)
+        optimizer = AdamW(self.unet.parameters(), lr=lr, weight_decay=0.0000001)
         
         sched_gamma = self.hparams.scheduler_gamma
         sched = ExponentialLR(optimizer,sched_gamma)
