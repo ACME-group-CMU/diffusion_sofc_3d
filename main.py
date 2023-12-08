@@ -197,7 +197,7 @@ class Diffusion(LightningModule):
         noisy_imgs = self.noise_scheduler.add_noise(imgs,timesteps,noise)
         noise_pred = self.unet(noisy_imgs,timesteps)
         
-        loss = self.mse(noise_pred,noise)
+        loss = self.mse(noise_pred.flatten(),noise.flatten())
         self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         
         #variance = torch.mean(torch.std(noise-noise_pred),dim=[1,2,3])
