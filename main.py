@@ -83,7 +83,8 @@ def main():
                                             save_last=True,
                                             filename="best_loss-{epoch:03d}-{loss:.6f}",
                                         )
-
+    
+    
     trainer = Trainer(
         default_root_dir=args.dir,
         accelerator="gpu",
@@ -93,7 +94,8 @@ def main():
         strategy = strategy,
         deterministic = True,
         callbacks=[TQDMProgressBar(refresh_rate=(args.data_length//(40*args.batch_size))),checkpoint_callback],
-        precision=16
+        precision=16,
+        resume_from_checkpoint=args.ckpt
     )
 
     trainer.fit(model, dm)
@@ -255,6 +257,7 @@ if __name__ == '__main__':
     #Data Saving Parameters
     parser.add_argument("--dir", type=str, default='./results', help="directory that saves all the logs")
     parser.add_argument("--data_path", type=str, default='greyscale.npz', help="file name where the data belongs")
+    parser.add_argument("--ckpt",type=str, default=None, help="lightning checkpoint from where training can be restarted")
     # Model training 
     parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
     parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
