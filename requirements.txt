@@ -3,3 +3,4 @@ numpy==1.24.2
 pytorch_lightning==1.9.3
 torch==1.13.1
 tqdm==4.64.1
+pre-commit
