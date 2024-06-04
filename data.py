@@ -14,7 +14,15 @@ warnings.filterwarnings("ignore")
 ## Create Dataset class
 class Microstructures(Dataset):
 
-    def __init__(self, data_path, img_size=(64, 64, 64), length=5, apply_symmetry=True):
+    def __init__(
+        self,
+        data_path,
+        img_size=(64, 64, 64),
+        length=5,
+        apply_symmetry=True,
+        indices=None,
+        subset=None,
+    ):
         """
         Dataset class that will sample a 3D subimage from the data that is a numpy array
         in data_path
@@ -46,6 +54,23 @@ class Microstructures(Dataset):
         self.total_samples = length
         self.apply_sym = apply_symmetry
         self.img_size = img_size
+        self.indices = indices
+
+        if subset is not None:
+            self.data = self.apply_subset(subset)
+
+        if self.indices is not None:
+            self.total_samples = self.indices.shape[0]
+
+    def apply_subset(self, subset):
+        def parse_slice(s):
+            start, stop = (s.split(":") + [None])[:2]
+            start = int(start) if start else None
+            stop = int(stop) if stop else None
+            return slice(start, stop)
+
+        slices = tuple(parse_slice(s) for s in subset.split(","))
+        return self.data[slices]
 
     def __len__(self):
         return self.total_samples
@@ -56,7 +81,11 @@ class Microstructures(Dataset):
         im_dims = np.array(self.data.shape)
         subimage_size = np.array(self.img_size)
         idx_max = im_dims - (subimage_size - 1)
-        idx = [np.random.randint(i) for i in idx_max]
+
+        if self.indices is not None:
+            idx = self.indices[idx]
+        else:
+            idx = [np.random.randint(i) for i in idx_max]
 
         subimage = im[
             idx[0] : (idx[0] + subimage_size[0]),

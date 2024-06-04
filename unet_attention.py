@@ -89,12 +89,14 @@ class ResidualBlock(nn.Module):
             nn.GroupNorm(n_groups, in_channels),
             nn.SiLU(),
             nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.Dropout3d(dropout) if dropout > 0.0 else nn.Identity(),
         )
 
         # Group normalization and the second convolution layer
         self.conv2 = nn.Sequential(
             nn.GroupNorm(n_groups, out_channels),
             nn.SiLU(),
+            # nn.Dropout3d(dropout),
             nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
         )
 
@@ -108,7 +110,7 @@ class ResidualBlock(nn.Module):
         # Linear layer for time embeddings
         self.time_emb = nn.Sequential(nn.SiLU(), nn.Linear(time_channels, out_channels))
 
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout3d(dropout)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         """
@@ -137,10 +139,17 @@ class DownBlock(nn.Module):
     """
 
     def __init__(
-        self, in_channels: int, out_channels: int, time_channels: int, has_attn: bool
+        self,
+        in_channels: int,
+        out_channels: int,
+        time_channels: int,
+        has_attn: bool,
+        dropout: float,
     ):
         super().__init__()
-        self.res = ResidualBlock(in_channels, out_channels, time_channels)
+        self.res = ResidualBlock(
+            in_channels, out_channels, time_channels, dropout=dropout
+        )
         if has_attn:
             self.attn = SelfAttention(out_channels)
         else:
@@ -160,13 +169,18 @@ class UpBlock(nn.Module):
     """
 
     def __init__(
-        self, in_channels: int, out_channels: int, time_channels: int, has_attn: bool
+        self,
+        in_channels: int,
+        out_channels: int,
+        time_channels: int,
+        has_attn: bool,
+        dropout: float,
     ):
         super().__init__()
         # The input has `in_channels + out_channels` because we concatenate the output of the same resolution
         # from the first half of the U-Net
         self.res = ResidualBlock(
-            in_channels + out_channels, out_channels, time_channels
+            in_channels + out_channels, out_channels, time_channels, dropout=dropout
         )
         if has_attn:
             self.attn = SelfAttention(out_channels)
@@ -186,10 +200,15 @@ class MiddleBlock(nn.Module):
     This block is applied at the lowest resolution of the U-Net.
     """
 
-    def __init__(self, n_channels: int, time_channels: int, middle_attn=False):
+    def __init__(
+        self,
+        n_channels: int,
+        time_channels: int,
+        middle_attn=False,
+    ):
         super().__init__()
-        self.res1 = ResidualBlock(n_channels, n_channels, time_channels)
-        self.res2 = ResidualBlock(n_channels, n_channels, time_channels)
+        self.res1 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0)
+        self.res2 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0)
         if middle_attn:
             self.attn = SelfAttention(n_channels)
         else:
@@ -257,6 +276,7 @@ class UNet(nn.Module):
         is_attn=(False, False, False, True),
         n_blocks: int = 2,
         middle_attn=True,
+        dropout: float = 0.05,
     ):
         """
         * `image_channels` is the number of channels in the image. $3$ for RGB.
@@ -267,6 +287,11 @@ class UNet(nn.Module):
         * `middle_attn` for whether you want attention block
         """
         super(UNet, self).__init__()
+
+        if type(dropout) == float:
+            dropout = [dropout] * len(ch_mults)
+        else:
+            pass
 
         # Number of resolutions
         n_resolutions = len(ch_mults)
@@ -284,13 +309,15 @@ class UNet(nn.Module):
         # Number of channels
         out_channels = in_channels = n_channels
         # For each resolution
-        for i in range(n_resolutions):
+        for i, drop_val in zip(range(n_resolutions), dropout):
             # Number of output channels at this resolution
             out_channels = in_channels * ch_mults[i]
             # Add `n_blocks`
             for _ in range(n_blocks):
                 down.append(
-                    DownBlock(in_channels, out_channels, n_channels * 4, is_attn[i])
+                    DownBlock(
+                        in_channels, out_channels, n_channels * 4, is_attn[i], drop_val
+                    )
                 )
                 in_channels = out_channels
             # Down sample at all resolutions except the last
@@ -308,16 +335,18 @@ class UNet(nn.Module):
         # Number of channels
         in_channels = out_channels
         # For each resolution
-        for i in reversed(range(n_resolutions)):
+        for i, drop_val in zip(reversed(range(n_resolutions)), reversed(dropout)):
             # `n_blocks` at the same resolution
             out_channels = in_channels
             for _ in range(n_blocks):
                 up.append(
-                    UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i])
+                    UpBlock(
+                        in_channels, out_channels, n_channels * 4, is_attn[i], drop_val
+                    )
                 )
             # Final block to reduce the number of channels
             out_channels = in_channels // ch_mults[i]
-            up.append(UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i]))
+            up.append(UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i], 0))
             in_channels = out_channels
             # Up sample at all resolutions except last
             if i > 0:

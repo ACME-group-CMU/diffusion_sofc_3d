@@ -1,6 +1,9 @@
 import os
 import argparse
 import numpy as np
+from tqdm import tqdm
+import typing
+
 
 import torch
 import torch.nn as nn
@@ -23,7 +26,9 @@ from data import Microstructures
 
 # from unet import UNet
 from unet_attention import UNet
-from sampler import DDIMSampler
+
+# from sampler import DDIMSampler
+from diffusers import DDPMScheduler, DDIMScheduler
 
 import warnings
 
@@ -47,7 +52,7 @@ def main():
 
     print(args)
 
-    seed_everything(0, workers=True)
+    seed_everything(args.random_state, workers=True)
     image_size = [args.img_size] * 3
 
     dm = MicroData(
@@ -55,6 +60,8 @@ def main():
         img_size=image_size,
         data_length=args.data_length,
         apply_sym=args.apply_sym,
+        val_indices=args.val_indices,
+        subset=args.subset,
         batch_size=args.batch_size,
         num_workers=args.n_cpu,
     )
@@ -76,6 +83,7 @@ def main():
         args.beta_start,
         args.beta_end,
         args.var_schedule,
+        args.dropout,
     )
 
     if (args.n_gpu * args.n_nodes) > 1:
@@ -83,12 +91,27 @@ def main():
     else:
         strategy = None
 
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
+    best_callback = ModelCheckpoint(
+        save_top_k=2,
         monitor="loss",
         mode="min",
-        save_last=True,
         filename="best_loss-{epoch:03d}-{loss:.6f}",
+    )
+
+    best_val_callback = ModelCheckpoint(
+        save_top_k=2,
+        monitor="val_loss",
+        mode="min",
+        filename="best_val_loss-{epoch:03d}-{val_loss:.6f}",
+    )
+
+    checkpoint_callback = ModelCheckpoint(
+        save_top_k=-1,
+        monitor="epoch",
+        mode="max",
+        every_n_epochs=args.n_epochs // 5,
+        save_last=True,
+        filename="loss-{epoch:03d}-{loss:.6f}",
     )
 
     trainer = Trainer(
@@ -102,9 +125,12 @@ def main():
         callbacks=[
             TQDMProgressBar(refresh_rate=(args.data_length // (40 * args.batch_size))),
             checkpoint_callback,
+            best_callback,
+            best_val_callback,
         ],
         precision=16,
         resume_from_checkpoint=args.ckpt,
+        gradient_clip_val=args.clip_val,
     )
 
     trainer.fit(model, dm)
@@ -114,10 +140,12 @@ class MicroData(LightningDataModule):
     def __init__(
         self,
         data_path: str = ".",
-        img_size=(64, 64, 64),
+        img_size=(96, 96, 96),
         data_length=10000,
         apply_sym=True,
-        batch_size: int = 256,
+        val_indices=None,
+        subset=None,
+        batch_size: int = 32,
         num_workers: int = 1,
     ):
         super().__init__()
@@ -128,20 +156,29 @@ class MicroData(LightningDataModule):
         self.img_size = img_size
         self.length = data_length
         self.apply_symmetry = apply_sym
+        self.val_indices = np.load(val_indices) if val_indices is not None else None
+        self.subset = subset
 
     def setup(self, stage=None):
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
 
-            data_full = Microstructures(
+            self.data_train = Microstructures(
                 self.data_dir,
                 self.img_size,
                 self.length,
                 apply_symmetry=self.apply_symmetry,
+                indices=None,
+                subset=self.subset,
             )
 
-            self.data_train, self.data_val = random_split(
-                data_full, [int(self.length * (9 / 10)), int(self.length * (1 / 10))]
+            self.data_val = Microstructures(
+                self.data_dir,
+                self.img_size,
+                self.length,
+                apply_symmetry=self.apply_symmetry,
+                indices=self.val_indices,
+                subset=None,
             )
 
     def train_dataloader(self):
@@ -178,6 +215,7 @@ class Diffusion(LightningModule):
         beta_start=0.0001,
         beta_end=0.1,
         var_sched="linear",
+        dropout=0,
         **kwargs,
     ):
         super().__init__()
@@ -192,8 +230,9 @@ class Diffusion(LightningModule):
             n_blocks=n_blocks,
             ch_mults=ch_mul,
             is_attn=is_attn,
+            dropout=dropout,
         )
-
+        """
         self.noise_scheduler = DDIMSampler(
             dif_timesteps,
             inf_timesteps,
@@ -201,6 +240,25 @@ class Diffusion(LightningModule):
             beta_end=beta_end,
             var_schedule=var_sched,
         )
+        """
+
+        if var_sched == "cosine":
+            self.noise_scheduler = DDPMScheduler(
+                num_train_timesteps=dif_timesteps,
+                beta_schedule="squaredcos_cap_v2",
+                timestep_spacing="linspace",
+            )
+        elif var_sched == "linear":
+            self.noise_scheduler = DDPMScheduler(
+                num_train_timesteps=dif_timesteps,
+                beta_schedule="linear",
+                beta_start=beta_start,
+                beta_end=beta_end,
+                timestep_spacing="linspace",
+            )
+
+        self.noise_scheduler.set_timesteps(inf_timesteps)
+
         self.sample_shape = (sample_amt, channels, height, width, depth)
         if mse_sum:
             self.mse = nn.MSELoss(reduction="sum")
@@ -220,39 +278,90 @@ class Diffusion(LightningModule):
             0, self.hparams.dif_timesteps, (bs,), device=imgs.device
         ).long()
 
-        noisy_imgs = self.noise_scheduler.add_noise(imgs, timesteps, noise)
+        noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
         noise_pred = self.unet(noisy_imgs, timesteps)
 
         loss = self.mse(noise_pred.flatten(), noise.flatten())
-        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log(
+            "loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
 
         # variance = torch.mean(torch.std(noise-noise_pred),dim=[1,2,3])
         # self.log('variance',variance,on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         return loss
 
-    """
     def validation_step(self, batch, batch_idx):
-        
+
         imgs = batch
-        
+
         # sample noise
         noise = torch.randn_like(imgs)
         bs = imgs.shape[0]
-        
-        timesteps = torch.randint(0,self.hparams.dif_timesteps,(bs,),device=imgs.device).long()
-        
-        noisy_imgs = self.noise_scheduler.add_noise(imgs,timesteps,noise)
-        noise_pred = self.unet(noisy_imgs,timesteps)
-        
-        loss = self.mse(noise_pred,noise)
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        
-        #variance = torch.mean(torch.std(noise-noise_pred),dim=[1,2,3])
-        #self.log('val_variance',variance,on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        
+
+        timesteps = torch.randint(
+            0, self.hparams.dif_timesteps, (bs,), device=imgs.device
+        ).long()
+
+        noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
+        noise_pred = self.unet(noisy_imgs, timesteps)
+
+        loss = self.mse(noise_pred.flatten(), noise.flatten())
+        self.log(
+            "val_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+
+        # variance = torch.mean(torch.std(noise-noise_pred),dim=[1,2,3])
+        # self.log('val_variance',variance,on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
         return loss
-    """
+
+    def forward(self, noisy_img, timestep: int):
+        """
+        Noisy Image : (B,C,D,H,W)
+        Timesteps : Integer
+        """
+
+        ## Make sure the devices are correct
+        noisy_img = noisy_img.to(next(self.unet.parameters()).device)
+        timesteps = noisy_img.new_full(
+            (noisy_img.shape[0],), timestep, dtype=torch.long
+        )
+
+        return self.unet(noisy_img, timesteps)
+
+    @torch.no_grad()
+    def generate(self, inf_timesteps=None, sample_shape=(5, 1, 96, 96, 96)):
+
+        if inf_timesteps is not None:
+            self.noise_scheduler.set_timesteps(inf_timesteps)
+
+        shape = sample_shape
+
+        x = torch.randn(shape).to(next(self.unet.parameters()).device)
+
+        for i in tqdm(self.noise_scheduler.timesteps):
+            i = i.item()
+            residual_noise = self(x, i)
+            x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
+
+        x = x.cpu().numpy().squeeze()
+        # x = ((x+1)/2)*255
+        # x = np.round(x,0)
+
+        return x
 
     def configure_optimizers(self):
 
@@ -271,11 +380,7 @@ class Diffusion(LightningModule):
     def training_epoch_end(self, training_step_outputs):
 
         if (self.current_epoch + 1) % self.save_freq == 0:
-            sample_imgs = (
-                self.noise_scheduler.sample(self.unet, self.sample_shape).cpu().detach()
-            )
-            sample_imgs = torch.clamp(sample_imgs, -1, 1)
-            sample_imgs = sample_imgs.numpy()
+            sample_imgs = self.generate(sample_shape=self.sample_shape)
             np.save(f"{self.logger.log_dir}/{self.current_epoch}.npy", sample_imgs)
 
 
@@ -290,7 +395,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_path",
         type=str,
-        default="greyscale.npz",
+        default="dataset/denoised_grey_ints.npz",
         help="file name where the data belongs",
     )
     parser.add_argument(
@@ -304,15 +409,26 @@ if __name__ == "__main__":
         "--n_epochs", type=int, default=200, help="number of epochs of training"
     )
     parser.add_argument(
+        "--random_state", type=int, default=100, help="random state for everything"
+    )
+    parser.add_argument(
         "--batch_size", type=int, default=64, help="size of the batches"
     )
     parser.add_argument("--lr", type=float, default=0.0001, help="learning rate")
     parser.add_argument(
         "--scheduler_gamma",
         type=float,
-        default=0.8,
+        default=0.95,
         help="scheduler factor to reduce every 10 epochs",
     )
+
+    parser.add_argument(
+        "--clip_val",
+        type=float,
+        default=None,
+        help="gradient clip value (norm)",
+    )
+
     parser.add_argument(
         "--n_cpu",
         type=int,
@@ -339,7 +455,19 @@ if __name__ == "__main__":
         "--data_length", type=int, default=20000, help="number of random data points"
     )
     parser.add_argument(
-        "--img_size", type=int, default=64, help="generated image size cubic dimension"
+        "--img_size", type=int, default=96, help="generated image size cubic dimension"
+    )
+    parser.add_argument(
+        "--val_indices",
+        type=str,
+        default="dataset/val_indices.npy",
+        help="indices to get validation set from",
+    )
+    parser.add_argument(
+        "--subset",
+        type=str,
+        default=":,150:1500,:",
+        help="if training data needs to be split from entire microstructure, define the region",
     )
     parser.add_argument(
         "--channels", type=int, default=1, help="number of image channels"
@@ -387,6 +515,13 @@ if __name__ == "__main__":
         default="(0,0,1,1)",
         help="Whether the block has self-attention",
     )
+
+    parser.add_argument(
+        "--dropout",
+        default=0.0,
+        help="How much dropout in each resolution",
+    )
+
     parser.add_argument(
         "--var_schedule",
         type=str,
@@ -401,6 +536,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if type(args.dropout) == float:
+        pass
+    else:
+        args.dropout = eval(args.dropout)
 
     args.apply_sym = eval(args.apply_sym)
     args.mse_sum = eval(args.mse_sum)
