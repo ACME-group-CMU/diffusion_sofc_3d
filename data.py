@@ -17,6 +17,7 @@ class Microstructures(Dataset):
     def __init__(
         self,
         data_path,
+        condition_path,
         img_size=(64, 64, 64),
         length=5,
         apply_symmetry=True,
@@ -35,6 +36,9 @@ class Microstructures(Dataset):
                     It will load the file and put search for "data" array as it is by default a
                     numpy compressed file.
 
+        condition_path : string
+                    Should be the path to a 3D image data stored as a numpy ndarray for the segmented data.
+
         img_size : tuple of ints
             Size of the subvolume to be sampled.
 
@@ -51,6 +55,7 @@ class Microstructures(Dataset):
         """
 
         self.data = np.load(data_path)["data"]
+        self.cond_data = np.load(condition_path)
         self.total_samples = length
         self.apply_sym = apply_symmetry
         self.img_size = img_size
@@ -58,6 +63,7 @@ class Microstructures(Dataset):
 
         if subset is not None:
             self.data = self.apply_subset(subset)
+            self.cond_data = self.apply_subset(cond_data)
 
         if self.indices is not None:
             self.total_samples = self.indices.shape[0]
@@ -93,7 +99,13 @@ class Microstructures(Dataset):
             idx[2] : (idx[2] + subimage_size[2]),
         ]
 
-        subimage = torch.Tensor(subimage)
+        cond_subimage = self.cond_data[
+            idx[0] : (idx[0] + subimage_size[0]),
+            idx[1] : (idx[1] + subimage_size[1]),
+            idx[2] : (idx[2] + subimage_size[2]),
+        ]
+
+        subimage = torch.tensor(subimage)
 
         if self.apply_sym:
             subimage = torch.rot90(subimage, k=np.random.randint(4), dims=(1, 2))
@@ -113,4 +125,8 @@ class Microstructures(Dataset):
 
         subimage = torch.unsqueeze(subimage, 0)
 
-        return subimage
+        vol_fracs = np.array([(cond_subimage == i).sum() for i in range(1, 4)])
+        vol_fracs = vol_fracs / cond_subimage.size
+        vol_fracs = torch.tensor(vol_fracs, dtype=subimage.dtype)
+
+        return subimage, vol_fracs

@@ -35,6 +35,23 @@ class TimeEmbedding(nn.Module):
         return emb
 
 
+class ConditionEmbedding(nn.Module):
+    def __init__(self, n_channels: int, condition_dim: int):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(condition_dim, n_channels * 2),
+            nn.SiLU(),
+            nn.Linear(n_channels * 2, n_channels * 2),
+            nn.SiLU(),
+            nn.Linear(n_channels * 2, n_channels * 2),
+            nn.SiLU(),
+            nn.Linear(n_channels * 2, n_channels),
+        )
+
+    def forward(self, c: torch.Tensor):
+        return self.model(c)
+
+
 class SelfAttention(nn.Module):
     "Self attention layer for `n_channels`."
 
@@ -58,6 +75,51 @@ class SelfAttention(nn.Module):
         o = self.gamma * torch.bmm(h, beta) + x
 
         return o.view(*size).contiguous()
+
+
+class CrossAttention(nn.Module):
+    def __init__(self, n_channels: int, condition_dim: int):
+        super().__init__()
+        self.query = nn.Conv3d(n_channels, n_channels // 4, kernel_size=1, bias=False)
+        self.key = nn.Linear(condition_dim, n_channels // 4, bias=False)
+        self.value = nn.Linear(condition_dim, n_channels, bias=False)
+        self.out_conv = nn.Conv3d(n_channels, n_channels, kernel_size=1, bias=False)
+        self.gamma = nn.Parameter(torch.tensor([0.0]))
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor):
+        size = x.size()  # [batch_size, channels, height, width, depth]
+        x_flat = x.view(
+            size[0], size[1], -1
+        )  # Flatten spatial dimensions [batch_size, channels, height*width*depth]
+
+        # Apply query projection
+        query = self.query(x)  # [batch_size, n_channels // 4, height, width, depth]
+        query_flat = query.view(
+            size[0], query.size(1), -1
+        )  # Flatten spatial dimensions
+
+        # Apply key and value projections
+        key = self.key(c).unsqueeze(-1)  # [batch_size, n_channels // 4, 1]
+        value = self.value(c).unsqueeze(-1)  # [batch_size, n_channels, 1]
+
+        # Attention mechanism
+        attn = torch.bmm(
+            query_flat.permute(0, 2, 1), key
+        )  # [batch_size, height*width*depth, 1]
+        attn = F.softmax(attn, dim=1)
+
+        # Compute weighted sum
+        weighted_value = torch.bmm(
+            value, attn.permute(0, 2, 1)
+        )  # [batch_size, n_channels, height*width*depth]
+        weighted_value = weighted_value.view(
+            size
+        )  # Reshape to original dimensions [batch_size, n_channels, height, width, depth]
+
+        # Apply output convolution
+        out = self.out_conv(weighted_value)
+
+        return self.gamma * out + x
 
 
 class ResidualBlock(nn.Module):
@@ -276,7 +338,9 @@ class UNet(nn.Module):
         is_attn=(False, False, False, True),
         n_blocks: int = 2,
         middle_attn=True,
-        dropout: float = 0.05,
+        dropout=0.05,
+        condition_dim=None,
+        cross_attn=False,
     ):
         """
         * `image_channels` is the number of channels in the image. $3$ for RGB.
@@ -288,7 +352,7 @@ class UNet(nn.Module):
         """
         super(UNet, self).__init__()
 
-        if type(dropout) == float:
+        if (type(dropout) == float) or (type(dropout) == int):
             dropout = [dropout] * len(ch_mults)
         else:
             pass
@@ -303,6 +367,17 @@ class UNet(nn.Module):
 
         # Time embedding layer. Time embedding has `n_channels * 4` channels
         self.time_emb = TimeEmbedding(n_channels * 4)
+
+        # Conditional Embedding. Conditional Embedding currently dense layers to `n_channels * 4`
+
+        if condition_dim is not None:
+            self.condition_emb = ConditionEmbedding(n_channels * 4, condition_dim)
+            self.cross_attn = (
+                CrossAttention(n_channels, n_channels * 4)
+                if cross_attn is True
+                else None
+            )
+            self.time_concat = nn.Linear(n_channels * 8, n_channels * 4)
 
         # #### First half of U-Net - decreasing resolution
         down = []
@@ -360,9 +435,9 @@ class UNet(nn.Module):
         self.act = nn.SiLU()
         self.final = nn.Conv3d(in_channels, image_channels, kernel_size=3, padding=1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None):
         """
-        * `x` has shape `[batch_size, in_channels, height, width]`
+        * `x` has shape `[batch_size, in_channels, height, width,depth]`
         * `t` has shape `[batch_size]`
         """
 
@@ -371,6 +446,13 @@ class UNet(nn.Module):
 
         # Get image projection
         x = self.image_proj(x)
+
+        if (self.condition_emb is not None) and (c is not None):
+            c = self.condition_emb(c)
+            t = self.time_concat(torch.concat((t, c), dim=1))
+
+            if self.cross_attn is not None:
+                x = self.cross_attn(x, c)
 
         # `h` will store outputs at each resolution for skip connection
         h = [x]
