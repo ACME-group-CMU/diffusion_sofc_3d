@@ -91,6 +91,10 @@ def main(config):
         config.training.ema_decay,  # Add this line
         config.training.validate_with_ema,  # Add this line
     )
+    
+    # Compile the model
+    model = torch.compile(model,mode='reduce-overhead')
+
 
     if config.logging.uncond_path is not None and config.logging.ckpt is None:
         model.load_unconditional_weights(config.logging.uncond_path)
@@ -98,7 +102,7 @@ def main(config):
     if (config.training.n_gpu * config.training.n_nodes) > 1:
         strategy = "ddp"
     else:
-        strategy = None
+        strategy = "auto"
 
     best_callback = ModelCheckpoint(
         save_top_k=2,
@@ -147,12 +151,10 @@ def main(config):
             swa_callback,
         ],
         precision=config.training.precision,
-        resume_from_checkpoint=config.logging.ckpt,
         gradient_clip_val=config.training.clip_val,
-        track_grad_norm=2,
     )
 
-    trainer.fit(model, dm)
+    trainer.fit(model, dm,ckpt_path=config.logging.ckpt)
 
 
 class MicroData(LightningDataModule):
@@ -247,7 +249,7 @@ class MicroData(LightningDataModule):
             DataLoader: Training dataloader.
         """
         return DataLoader(
-            self.data_train, batch_size=self.batch_size, num_workers=self.num_workers
+            self.data_train, batch_size=self.batch_size, num_workers=self.num_workers,pin_memory=True,shuffle=True
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -258,7 +260,7 @@ class MicroData(LightningDataModule):
             DataLoader: Validation dataloader.
         """
         return DataLoader(
-            self.data_val, batch_size=self.batch_size * 2, num_workers=self.num_workers
+            self.data_val, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True,shuffle=True
         )
 
 class EMA:
@@ -402,10 +404,6 @@ class Diffusion(LightningModule):
         # calculate loss
         loss = self.mse(noise_pred.flatten(), noise.flatten())
 
-        # Backpropagation
-        self.manual_backward(loss)
-        opt.step()
-
         if self.ema:
             self.ema.update()
 
@@ -430,20 +428,69 @@ class Diffusion(LightningModule):
         else:
             model = self.unet.eval()
 
-        # Conditional validation
-        if (self.condition_dim is not None) and ((self.current_epoch+1)% int(self.trainer.max_epochs * 0.1))==0:
-            imgs, conditions = batch
-            batch_size = self.sample_amt
-            sample_shape = (batch_size, *img.shape[1:])  
+        # Standard validation step: predict noise
+        imgs, conditions = batch # Unpack both images and conditions
 
+        # sample noise
+        noise = torch.randn_like(imgs)
+        bs = imgs.shape[0]
+
+        timesteps = torch.randint(
+            0, self.hparams.dif_timesteps, (bs,), device=imgs.device
+        ).long()
+
+        noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
+
+        # Predict noise, pass condition if available
+        if self.condition_dim is not None:
+            noise_pred = model(noisy_imgs, timesteps, conditions)
+        else:
+            noise_pred = model(noisy_imgs, timesteps, None)
+
+        loss = self.mse(noise_pred.flatten(), noise.flatten())
+
+        self.log(
+            "val_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+
+        if self.ema and self.hparams.validate_with_ema:
+            self.ema.restore()
+
+        return loss
+
+    @torch.no_grad()
+    def on_train_epoch_end(self):
+
+        # Check if we should perform conditional validation this epoch
+        if (self.condition_dim is not None) and ((self.current_epoch+1) % self.hparams.conditional_validation_frequency == 0):
+
+            # EMA shadow model context
+            # Use EMA model if available and configured for validation
+            if self.ema and self.hparams.validate_with_ema:
+                self.ema.apply_shadow()
+                model = self.ema.model
+            else:
+                model = self.unet.eval()
+            # Get a random batch from the validation dataloader
+            val_dataloader = self.trainer.val_dataloaders
+
+            imgs, conditions = next(iter(val_dataloader))
+            sample_shape = imgs.shape
+            
             # Generate samples using the diffusion model
             generated_images = self.generate(
                 inf_timesteps=self.hparams.inf_timesteps,
                 sample_shape=sample_shape,
                 condition=conditions.cpu().numpy(),
-                model=model # Pass the model to generate
+                model=model
             )
-            generated_images = torch.tensor(generated_images).type_as(imgs)
+            generated_images = torch.tensor(generated_images).to(self.device)
 
             # Estimate volume fractions from the generated images
             estimated_percs = []
@@ -452,61 +499,22 @@ class Diffusion(LightningModule):
                 estimated_percs.append(percs.unsqueeze(0))  # Keep the batch dimension
 
             estimated_percs = torch.cat(estimated_percs, dim=0).type_as(conditions)
+            
+            assert estimated_percs.device == conditions.device, "Estimated and true volume fractions must have the same device"
 
             # Calculate the MSE loss between estimated and true volume fractions
             loss = self.mse(estimated_percs.flatten(), conditions.flatten())
 
             self.log(
-                "val_loss_generation",
+                "generation_loss",
                 loss,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
                 logger=True,
                 sync_dist=True,
             )
-
-            if self.ema and self.hparams.validate_with_ema:
-                self.ema.restore()
             
-            return loss
-
-        else:
-            # Standard validation step: predict noise
-            imgs, conditions = batch # Unpack both images and conditions
-
-            # sample noise
-            noise = torch.randn_like(imgs)
-            bs = imgs.shape[0]
-
-            timesteps = torch.randint(
-                0, self.hparams.dif_timesteps, (bs,), device=imgs.device
-            ).long()
-
-            noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
-
-            # Predict noise, pass condition if available
-            if self.condition_dim is not None:
-                noise_pred = model(noisy_imgs, timesteps, conditions)
-            else:
-                noise_pred = model(noisy_imgs, timesteps, None)
-
-            loss = self.mse(noise_pred.flatten(), noise.flatten())
-
-            self.log(
-                "val_loss",
-                loss,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                logger=True,
-                sync_dist=True,
-            )
-
+            # Restore original model if using EMA
             if self.ema and self.hparams.validate_with_ema:
                 self.ema.restore()
-
-            return loss
 
     @torch.no_grad()
     def generate(
