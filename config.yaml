@@ -1,0 +1,49 @@
+data:
+  path: "/trace/home/rbajpai/Diffusion/dataset/denoised_grey_ints.npz"
+  cond_path: "/trace/home/rbajpai/group/final_img.npy"
+  length: 200
+  img_size: 32
+  val_indices: null
+  subset: null
+  apply_sym: true
+
+training:
+  precision: 16
+  n_epochs: 20
+  random_state: 100
+  batch_size: 6
+  lr: 0.0001
+  scheduler_gamma: 0.95
+  clip_val: null
+  n_cpu: 8
+  n_gpu: 1
+  n_nodes: 1
+  divide_batch: True
+  use_ema: True
+  ema_decay: 0.995
+  validate_with_ema: True
+  conditional_validation_frequency: 1
+
+model:
+  channels: 1
+  diff_timesteps: 1000
+  inf_timesteps: 1000
+  n_blocks: 1
+  base_dim: 16
+  sample_interval: 2
+  sample_size: 10
+  mse_sum: false
+  ch_mul: [1,4,4,1]
+  is_attn: [0,0,1,1]
+  dropout: [0,0.1,0.1,0.1]
+  var_schedule: "cosine"
+  beta_start: 0.0001
+  beta_end: 0.02
+  cond_dim: null
+  cross_attn: False
+  train_base_model: False
+
+logging:
+  dir: "./results"
+  ckpt: null
+  uncond_path: null

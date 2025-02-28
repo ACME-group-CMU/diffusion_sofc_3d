@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[24]:
-
-
 import numpy as np
 import math
 import torch
@@ -12,8 +9,13 @@ import torch.nn.functional as F
 
 
 class TimeEmbedding(nn.Module):
-
     def __init__(self, n_channels: int):
+        """
+        Initialize the TimeEmbedding module.
+        
+        Args:
+            n_channels (int): Number of channels for the embedding.
+        """
         super().__init__()
 
         self.n_channels = n_channels
@@ -23,8 +25,16 @@ class TimeEmbedding(nn.Module):
             nn.Linear(n_channels // 2, n_channels),
         )
 
-    def forward(self, t: torch.Tensor):
-
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the TimeEmbedding module.
+        
+        Args:
+            t (torch.Tensor): Input tensor.
+        
+        Returns:
+            torch.Tensor: Output tensor after embedding.
+        """
         half_dim = self.n_channels // 8
         emb = math.log(10_000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=t.device) * -emb)
@@ -37,6 +47,13 @@ class TimeEmbedding(nn.Module):
 
 class ConditionEmbedding(nn.Module):
     def __init__(self, n_channels: int, condition_dim: int):
+        """
+        Initialize the ConditionEmbedding module.
+        
+        Args:
+            n_channels (int): Number of channels for the embedding.
+            condition_dim (int): Dimension of the condition.
+        """
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(condition_dim, n_channels * 2),
@@ -48,7 +65,16 @@ class ConditionEmbedding(nn.Module):
             nn.Linear(n_channels * 2, n_channels),
         )
 
-    def forward(self, c: torch.Tensor):
+    def forward(self, c: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the ConditionEmbedding module.
+        
+        Args:
+            c (torch.Tensor): Input tensor.
+        
+        Returns:
+            torch.Tensor: Output tensor after embedding.
+        """
         return self.model(c)
 
 
@@ -86,7 +112,7 @@ class CrossAttention(nn.Module):
         self.out_conv = nn.Conv3d(n_channels, n_channels, kernel_size=1, bias=False)
         self.gamma = nn.Parameter(torch.tensor([0.0]))
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor):
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         size = x.size()  # [batch_size, channels, height, width, depth]
         x_flat = x.view(
             size[0], size[1], -1
@@ -174,7 +200,7 @@ class ResidualBlock(nn.Module):
 
         self.dropout = nn.Dropout3d(dropout)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """
         * `x` has shape `[batch_size, in_channels, height, width,depth]`
         * `t` has shape `[batch_size, time_channels]`
@@ -189,9 +215,6 @@ class ResidualBlock(nn.Module):
 
         # Add the shortcut connection and return
         return h + self.shortcut(x)
-
-
-# In[40]:
 
 
 class DownBlock(nn.Module):
@@ -217,7 +240,7 @@ class DownBlock(nn.Module):
         else:
             self.attn = nn.Identity()
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x = self.res(x, t)
         x = self.attn(x)
 
@@ -249,7 +272,7 @@ class UpBlock(nn.Module):
         else:
             self.attn = nn.Identity()
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x = self.res(x, t)
         x = self.attn(x)
         return x
@@ -276,14 +299,11 @@ class MiddleBlock(nn.Module):
         else:
             self.attn = nn.Identity()
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x = self.res1(x, t)
         x = self.attn(x)
         x = self.res2(x, t)
         return x
-
-
-# In[41]:
 
 
 class Upsample(nn.Module):
@@ -299,7 +319,7 @@ class Upsample(nn.Module):
             nn.Conv3d(n_channels, n_channels, kernel_size=3, stride=1, padding="same"),
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # `t` is not used, but it's kept in the arguments because for the attention layer function signature
         # to match with `ResidualBlock`.
         _ = t
@@ -315,14 +335,11 @@ class Downsample(nn.Module):
         super().__init__()
         self.conv = nn.Conv3d(n_channels, n_channels, 3, 2, 1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # `t` is not used, but it's kept in the arguments because for the attention layer function signature
         # to match with `ResidualBlock`.
         _ = t
         return self.conv(x)
-
-
-# In[42]:
 
 
 class UNet(nn.Module):
@@ -378,6 +395,11 @@ class UNet(nn.Module):
                 else None
             )
             self.time_concat = nn.Linear(n_channels * 8, n_channels * 4)
+            
+        else:
+            self.condition_emb = None
+            self.cross_attn = None
+            self.time_concat = None
 
         # #### First half of U-Net - decreasing resolution
         down = []
@@ -435,7 +457,7 @@ class UNet(nn.Module):
         self.act = nn.SiLU()
         self.final = nn.Conv3d(in_channels, image_channels, kernel_size=3, padding=1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None):
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
         """
         * `x` has shape `[batch_size, in_channels, height, width,depth]`
         * `t` has shape `[batch_size]`

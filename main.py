@@ -1,9 +1,11 @@
 import os
-import argparse
 import numpy as np
 from tqdm.auto import tqdm
 import typing
-
+import json
+from omegaconf import OmegaConf
+import argparse
+from copy import deepcopy
 
 import torch
 import torch.nn as nn
@@ -23,78 +25,77 @@ from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 
 from data import Microstructures
-
-# from unet import UNet
 from unet_attention import UNet
-
-# from sampler import DDIMSampler
 from diffusers import DDPMScheduler, DDIMScheduler
 from skimage.filters import threshold_multiotsu
 
 import warnings
 
-
 warnings.filterwarnings("ignore")
+torch.set_float32_matmul_precision('medium')
 
-
-def main():
-
-    global args
-
-    if args.n_epochs < 5 * args.sample_interval:
-        args.sample_interval = args.n_epochs // 6
+def main(config):
+    """
+    Main function to set up and start the training process.
+    """
+    if config.training.n_epochs < 5 * config.model.sample_interval:
+        config.model.sample_interval = config.training.n_epochs // 6
     else:
         pass
 
-    if (args.n_gpu * args.n_nodes > 1) and args.divide_batch:
-        args.batch_size = args.batch_size // (args.n_gpu * args.n_nodes)
+    if (config.training.n_gpu * config.training.n_nodes > 1) and config.training.divide_batch:
+        config.training.batch_size = config.training.batch_size // (config.training.n_gpu * config.training.n_nodes)
     else:
         pass
 
-    print(args)
+    print(json.dumps(config,indent=2, default=str))
 
-    seed_everything(args.random_state, workers=True)
-    image_size = [args.img_size] * 3
+    seed_everything(config.training.random_state, workers=True)
+    image_size = [config.data.img_size] * 3
 
     dm = MicroData(
-        data_path=args.data_path,
-        cond_path=args.cond_path,
+        data_path=config.data.path,
+        cond_path=config.data.cond_path,
         img_size=image_size,
-        data_length=args.data_length,
-        apply_sym=args.apply_sym,
-        val_indices=args.val_indices,
-        subset=args.subset,
-        batch_size=args.batch_size,
-        num_workers=args.n_cpu,
+        data_length=config.data.length,
+        apply_sym=config.data.apply_sym,
+        val_indices=config.data.val_indices,
+        subset=config.data.subset,
+        batch_size=config.training.batch_size,
+        num_workers=config.training.n_cpu,
     )
 
     model = Diffusion(
-        args.channels,
+        config.model.channels,
         *image_size,
-        args.base_dim,
-        args.lr,
-        args.sample_interval,
-        args.dif_timesteps,
-        args.inf_timesteps,
-        args.sample_size,
-        args.scheduler_gamma,
-        args.n_blocks,
-        args.mse_sum,
-        args.ch_mul,
-        args.is_attn,
-        args.beta_start,
-        args.beta_end,
-        args.var_schedule,
-        args.dropout,
-        args.cond_dim,
-        args.cross_attn,
-        args.train_base_model,
+        config.model.base_dim,
+        config.training.lr,
+        config.model.sample_interval,
+        config.model.diff_timesteps,
+        config.model.inf_timesteps,
+        config.model.sample_size,
+        config.training.scheduler_gamma,
+        config.model.n_blocks,
+        config.model.mse_sum,
+        config.model.ch_mul,
+        config.model.is_attn,
+        config.model.beta_start,
+        config.model.beta_end,
+        config.model.var_schedule,
+        config.model.dropout,
+        config.model.cond_dim,
+        config.model.cross_attn,
+        config.model.train_base_model,
+        config.training.conditional_validation_frequency,  # Add this line
+        config.training.use_ema,  # Add this line
+        config.training.ema_decay,  # Add this line
+        config.training.validate_with_ema,  # Add this line
     )
 
-    if args.uncond_path is not None and args.ckpt is None:
-        model.load_unconditional_weights(args.uncond_path)
+    if config.logging.uncond_path is not None and config.logging.ckpt is None:
+        model.load_unconditional_weights(config.logging.uncond_path)
 
-    if (args.n_gpu * args.n_nodes) > 1:
+    if (config.training.n_gpu * config.training.n_nodes) > 1:
         strategy = "ddp"
     else:
         strategy = None
@@ -117,37 +118,37 @@ def main():
         save_top_k=-1,
         monitor="epoch",
         mode="max",
-        every_n_epochs=args.n_epochs // 5,
+        every_n_epochs=config.training.n_epochs // 5,
         save_last=True,
         filename="loss-{epoch:03d}-{loss:.6f}",
     )
 
     swa_callback = StochasticWeightAveraging(
-        swa_lrs=0.0001 if args.train_base_model else 0.001,
+        swa_lrs=0.0001 if config.model.train_base_model else 0.001,
         swa_epoch_start=0.8,
-        annealing_epochs=int(0.1 * args.n_epochs),
+        annealing_epochs=int(0.1 * config.training.n_epochs),
     )
 
     trainer = Trainer(
-        default_root_dir=args.dir,
-        accelerator="gpu",
-        devices=args.n_gpu,
-        num_nodes=args.n_nodes,
-        max_epochs=args.n_epochs,
+        default_root_dir=config.logging.dir,
+        accelerator="auto",
+        devices=config.training.n_gpu,
+        num_nodes=config.training.n_nodes,
+        max_epochs=config.training.n_epochs,
         strategy=strategy,
         deterministic=True,
         callbacks=[
             TQDMProgressBar(
-                refresh_rate=int(0.05 * (args.data_length // args.batch_size)) + 1
+                refresh_rate=int(0.05 * (config.data.length // config.training.batch_size)) + 1
             ),
             checkpoint_callback,
             best_callback,
             best_val_callback,
             swa_callback,
         ],
-        precision=16,
-        resume_from_checkpoint=args.ckpt,
-        gradient_clip_val=args.clip_val,
+        precision=config.training.precision,
+        resume_from_checkpoint=config.logging.ckpt,
+        gradient_clip_val=config.training.clip_val,
         track_grad_norm=2,
     )
 
@@ -159,14 +160,28 @@ class MicroData(LightningDataModule):
         self,
         data_path: str = ".",
         cond_path: str = ".",
-        img_size=(96, 96, 96),
-        data_length=10000,
-        apply_sym=True,
-        val_indices=None,
-        subset=None,
+        img_size: typing.Tuple[int, int, int] = (96, 96, 96),
+        data_length: int = 10000,
+        apply_sym: bool = True,
+        val_indices: typing.Optional[str] = None,
+        subset: typing.Optional[str] = None,
         batch_size: int = 32,
         num_workers: int = 1,
     ):
+        """
+        Initialize the MicroData module.
+        
+        Args:
+            data_path (str): Path to the data.
+            cond_path (str): Path to the conditional data.
+            img_size (tuple): Size of the images.
+            data_length (int): Length of the dataset.
+            apply_sym (bool): Whether to apply symmetry.
+            val_indices (str, optional): Path to validation indices.
+            subset (str, optional): Subset of the data.
+            batch_size (int): Batch size.
+            num_workers (int): Number of workers.
+        """
         super().__init__()
 
         self.data_dir = data_path
@@ -179,7 +194,13 @@ class MicroData(LightningDataModule):
         self.val_indices = np.load(val_indices) if val_indices is not None else None
         self.subset = subset
 
-    def setup(self, stage=None):
+    def setup(self, stage: typing.Optional[str] = None):
+        """
+        Set up the dataset for training and validation.
+        
+        Args:
+            stage (str, optional): Stage of the setup (fit or None).
+        """
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
 
@@ -218,17 +239,52 @@ class MicroData(LightningDataModule):
                     data_full, [self.length, (self.batch_size * 4)]
                 )
 
-    def train_dataloader(self):
-
+    def train_dataloader(self) -> DataLoader:
+        """
+        Get the training dataloader.
+        
+        Returns:
+            DataLoader: Training dataloader.
+        """
         return DataLoader(
             self.data_train, batch_size=self.batch_size, num_workers=self.num_workers
         )
 
-    def val_dataloader(self):
-
+    def val_dataloader(self) -> DataLoader:
+        """
+        Get the validation dataloader.
+        
+        Returns:
+            DataLoader: Validation dataloader.
+        """
         return DataLoader(
             self.data_val, batch_size=self.batch_size * 2, num_workers=self.num_workers
         )
+
+class EMA:
+    def __init__(self, model, decay=0.995):
+        self.model = model
+        self.decay = decay
+        self.shadow = deepcopy(model)
+        self.shadow.eval()
+        self.params = [p.data for p in self.model.parameters() if p.requires_grad]
+        self.shadow_params = [p.data for p in self.shadow.parameters() if p.requires_grad]
+        self.backup = []
+
+    def update(self):
+        decay = self.decay
+        for param, shadow_param in zip(self.params, self.shadow_params):
+            shadow_param.copy_(shadow_param * decay + (1 - decay) * param)
+
+    def apply_shadow(self):
+        self.backup = [p.clone() for p in self.params]
+        for param, shadow_param in zip(self.params, self.shadow_params):
+            param.data.copy_(shadow_param)
+
+    def restore(self):
+        for param, backup in zip(self.params, self.backup):
+            param.data.copy_(backup)
+        self.backup = []
 
 
 class Diffusion(LightningModule):
@@ -256,38 +312,29 @@ class Diffusion(LightningModule):
         condition_dim=None,
         cross_attn=False,
         train_base_model=False,
+        conditional_validation_frequency: int = 5,
+        use_ema: bool = True,  # Add EMA flag
+        ema_decay: float = 0.995,  # Add EMA decay rate
+        validate_with_ema: bool = True, # Add validation with EMA flag
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.save_freq = save_freq
-
-        # network
-        # self.unet = Unet(size=height,timesteps=den_timesteps,time_embedding_dim=time_dim,base_dim=base_dim,dim_mults=[2,4])
         self.unet = UNet(
             image_channels=channels,
             n_channels=base_dim,
-            n_blocks=n_blocks,
             ch_mults=ch_mul,
             is_attn=is_attn,
+            n_blocks=n_blocks,
             dropout=dropout,
             condition_dim=condition_dim,
             cross_attn=cross_attn,
         )
 
-        self.cross_attn = cross_attn
-        self.condition_dim = condition_dim
-        self.train_base_model = train_base_model
-
-        # Make sure the base model is not saved
-        if not self.train_base_model:
-            for param in self.unet.parameters():
-                param.requires_grad = False
-
-        if hasattr(self.unet, "condition_emb"):
-            if self.unet.condition_emb is not None:
-                for param in self.unet.condition_emb.parameters():
-                    param.requires_grad = True
+        self.ema = None # Initialize EMA to None
+        if use_ema:
+            self.ema = EMA(self.unet, decay=ema_decay)
 
         if var_sched == "cosine":
             self.noise_scheduler = DDPMScheduler(
@@ -304,51 +351,64 @@ class Diffusion(LightningModule):
                 timestep_spacing="linspace",
             )
 
-        self.noise_scheduler.set_timesteps(inf_timesteps)
 
-        self.sample_shape = (sample_amt, channels, height, width, depth)
-        if mse_sum:
-            self.mse = nn.MSELoss(reduction="sum")
-        else:
-            self.mse = nn.MSELoss()
+        self.mse = nn.MSELoss()
+        self.lr = lr
 
-    def forward(self, noisy_img, timestep: int, condition=None):
-        """
-        Noisy Image : (B,C,D,H,W)
-        Timesteps : Integer
-        """
+        self.channels = channels
+        self.width = width
+        self.height = height
+        self.depth = depth
+        self.sample_amt = sample_amt
+        self.condition_dim = condition_dim
 
-        ## Make sure the devices are correct
-        noisy_img = noisy_img.to(next(self.unet.parameters()).device)
-        timesteps = noisy_img.new_full(
-            (noisy_img.shape[0],), timestep, dtype=torch.long
-        )
+        self.automatic_optimization = False
+        self.train_base_model = train_base_model
 
-        return self.unet(noisy_img, timesteps, condition)
+    def configure_optimizers(self):
+        opt = AdamW(filter(lambda p: p.requires_grad, self.unet.parameters()), lr=self.lr)
+        scheduler = ExponentialLR(opt, gamma=self.hparams.scheduler_gamma)
+        return [opt], [scheduler]
 
     def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        opt.zero_grad()
 
         if self.condition_dim is not None:
             imgs, condition = batch
-        else:
-            imgs, condition = batch, None
-
-        if self.train_base_model:
-            if np.random.choice([True, False], p=[0.2, 0.8]):
+            bs = imgs.shape[0]
+            # Randomly set condition to None
+            if torch.rand(1) < 0.8:
                 condition = None
+        else:
+            imgs, _ = batch
+            condition = None
+            bs = imgs.shape[0]
 
         # sample noise
         noise = torch.randn_like(imgs)
-        bs = imgs.shape[0]
 
+        # sample a timestep for each image in the batch
         timesteps = torch.randint(
             0, self.hparams.dif_timesteps, (bs,), device=imgs.device
         ).long()
 
+        # add noise to the images
         noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
+
+        # predict noise
         noise_pred = self.unet(noisy_imgs, timesteps, condition)
 
+        # calculate loss
         loss = self.mse(noise_pred.flatten(), noise.flatten())
+
+        # Backpropagation
+        self.manual_backward(loss)
+        opt.step()
+
+        if self.ema:
+            self.ema.update()
+
         self.log(
             "loss",
             loss,
@@ -358,68 +418,62 @@ class Diffusion(LightningModule):
             logger=True,
             sync_dist=True,
         )
-        # variance = torch.mean(torch.std(noise-noise_pred),dim=[1,2,3])
-        # self.log('variance',variance,on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
+        # EMA shadow model context
+        if self.ema and self.hparams.validate_with_ema:
+            self.ema.apply_shadow()
+            model = self.ema.model
+        else:
+            model = self.unet.eval()
 
-        w = 0.2
+        # Conditional validation
+        if (self.condition_dim is not None) and ((self.current_epoch+1)% int(self.trainer.max_epochs * 0.1))==0:
+            imgs, conditions = batch
+            batch_size = self.sample_amt
+            sample_shape = (batch_size, *img.shape[1:])  
 
-        if self.condition_dim is not None:
-            imgs, condition = batch
+            # Generate samples using the diffusion model
+            generated_images = self.generate(
+                inf_timesteps=self.hparams.inf_timesteps,
+                sample_shape=sample_shape,
+                condition=conditions.cpu().numpy(),
+                model=model # Pass the model to generate
+            )
+            generated_images = torch.tensor(generated_images).type_as(imgs)
 
-            true_percs = []
-
-            for i in imgs:
-                percs = self.get_exp_vf_otsu(i)
-                percs = percs.view(-1, 3)
-                true_percs.append(percs)
-
-            true_percs = torch.cat(true_percs, dim=0).type_as(condition)
-            del condition
-
-            with torch.no_grad():
-                # sample noise
-                noise = torch.randn_like(imgs)
-                del imgs
-
-                for i in self.noise_scheduler.timesteps:
-                    i = i.item()
-                    residual_noise_cond = self(noise, i, true_percs)
-                    residual_noise = self(noise, i, None)
-
-                    residual_noise = ((1 + w) * residual_noise_cond) - (
-                        w * residual_noise
-                    )
-
-                    noise = self.noise_scheduler.step(
-                        residual_noise, i, noise
-                    ).prev_sample
-
+            # Estimate volume fractions from the generated images
             estimated_percs = []
-            for i in noise:
-                percs = self.get_exp_vf_otsu(i)
-                percs = percs.view(-1, 3)
-                estimated_percs.append(percs)
+            for img in generated_images:
+                percs = self.get_exp_vf_otsu(img)
+                estimated_percs.append(percs.unsqueeze(0))  # Keep the batch dimension
 
-            estimated_percs = torch.cat(estimated_percs, dim=0).type_as(true_percs)
+            estimated_percs = torch.cat(estimated_percs, dim=0).type_as(conditions)
 
-            loss = self.mse(estimated_percs.flatten(), true_percs.flatten())
+            # Calculate the MSE loss between estimated and true volume fractions
+            loss = self.mse(estimated_percs.flatten(), conditions.flatten())
+
             self.log(
-                "val_loss",
+                "val_loss_generation",
                 loss,
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
                 prog_bar=True,
                 logger=True,
                 sync_dist=True,
             )
 
+            if self.ema and self.hparams.validate_with_ema:
+                self.ema.restore()
+            
+            return loss
+
         else:
-            imgs, condition = batch, None
+            # Standard validation step: predict noise
+            imgs, conditions = batch # Unpack both images and conditions
 
             # sample noise
             noise = torch.randn_like(imgs)
@@ -430,9 +484,15 @@ class Diffusion(LightningModule):
             ).long()
 
             noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
-            noise_pred = self.unet(noisy_imgs, timesteps, condition)
+
+            # Predict noise, pass condition if available
+            if self.condition_dim is not None:
+                noise_pred = model(noisy_imgs, timesteps, conditions)
+            else:
+                noise_pred = model(noisy_imgs, timesteps, None)
 
             loss = self.mse(noise_pred.flatten(), noise.flatten())
+
             self.log(
                 "val_loss",
                 loss,
@@ -443,7 +503,51 @@ class Diffusion(LightningModule):
                 sync_dist=True,
             )
 
-        return loss
+            if self.ema and self.hparams.validate_with_ema:
+                self.ema.restore()
+
+            return loss
+
+    @torch.no_grad()
+    def generate(
+        self, inf_timesteps=None, sample_shape=(10, 1, 96, 96, 96), condition=None, model=None, w=2
+    ):
+        if model is None:
+            model = self.unet
+
+        if inf_timesteps is not None:
+            self.noise_scheduler.set_timesteps(inf_timesteps)
+
+        if condition is not None:
+            if np.array(condition).shape[0] != sample_shape[0]:
+                condition = np.array([condition] * sample_shape[0])
+
+            assert (
+                condition.shape[0] == sample_shape[0]
+            ), "number of conditions not matching the number of samples"
+        
+        x = torch.randn(sample_shape).to(next(model.parameters()).device)
+
+        if condition is not None:
+            condition = torch.tensor(condition).type_as(x)
+            w = w
+        else:
+            w = -1
+
+        for i in tqdm(self.noise_scheduler.timesteps):
+            i = i.item()
+            timestep = x.new_full((x.shape[0],), i, dtype=torch.long)
+
+            with torch.cuda.amp.autocast():
+                residual_noise_cond = model(x, timestep, condition)
+                residual_noise = model(x, timestep, None)
+            
+            residual_noise = residual_noise = ((1 + w) * residual_noise_cond) - (w * residual_noise)
+
+            x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
+
+        x = x.cpu().numpy().squeeze()
+        return x
 
     def get_exp_vf_otsu(self, microstructures):
 
@@ -476,58 +580,6 @@ class Diffusion(LightningModule):
             percs[i] = torch.sum(areas[i])
 
         return percs
-
-    @torch.no_grad()
-    def generate(
-        self, inf_timesteps=None, sample_shape=(10, 1, 96, 96, 96), condition=None, w=0
-    ):
-
-        if inf_timesteps is not None:
-            self.noise_scheduler.set_timesteps(inf_timesteps)
-
-        if condition is not None:
-            if np.array(condition).shape[0] != sample_shape[0]:
-                # print(condition.shape)
-                condition = np.array([condition] * sample_shape[0])
-                # print(condition.shape)
-
-            assert (
-                condition.shape[0] == sample_shape[0]
-            ), "number of conditions not matching the number of samples"
-
-        x = torch.randn(sample_shape).to(next(self.unet.parameters()).device)
-        if condition is not None:
-            condition = torch.tensor(condition).type_as(x)
-            w = w
-        else:
-            w = -1
-
-        for i in tqdm(self.noise_scheduler.timesteps):
-            i = i.item()
-            with torch.cuda.amp.autocast():
-                residual_noise_cond = self(x, i, condition)
-                residual_noise = self(x, i, None)
-
-            residual_noise = ((1 + w) * residual_noise_cond) - (w * residual_noise)
-
-            x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
-
-        x = x.cpu().numpy().squeeze()
-
-        return x
-
-    def configure_optimizers(self):
-
-        lr = self.hparams.lr
-        optimizer = AdamW(self.unet.parameters(), lr=lr, weight_decay=0.000001)
-
-        sched_gamma = self.hparams.scheduler_gamma
-        sched = ExponentialLR(optimizer, sched_gamma)
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": sched, "frequency": 10, "interval": "epoch"},
-        }
 
     def load_unconditional_weights(self, checkpoint_path):
         state_dict = torch.load(checkpoint_path)["state_dict"]
@@ -562,206 +614,9 @@ class Diffusion(LightningModule):
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-
-    # Data Saving Parameters
-    parser.add_argument(
-        "--dir", type=str, default="./results", help="directory that saves all the logs"
-    )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        default="dataset/denoised_grey_ints.npz",
-        help="file name where the data belongs",
-    )
-
-    parser.add_argument(
-        "--cond_path",
-        type=str,
-        default="~/group/final_img.npy",
-        help="file name where the conditional segmented data belongs",
-    )
-
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default=None,
-        help="lightning checkpoint from where training can be restarted",
-    )
-
-    parser.add_argument(
-        "--uncond_path",
-        type=str,
-        default=None,
-        help="lightning checkpoint for the base unconditional model",
-    )
-
-    parser.add_argument(
-        "--train_base_model",
-        type=str,
-        default="False",
-        help="do you want to train the base unconditional model or not (True/False)",
-    )
-
-    parser.add_argument(
-        "--cross_attn",
-        type=str,
-        default="False",
-        help="do you want to have cross attention between x and condition",
-    )
-
-    parser.add_argument(
-        "--cond_dim",
-        type=int,
-        default=3,
-        help="number of conditioning vector dimension",
-    )
-
-    # Model training
-    parser.add_argument(
-        "--n_epochs", type=int, default=50, help="number of epochs of training"
-    )
-    parser.add_argument(
-        "--random_state", type=int, default=100, help="random state for everything"
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=64, help="size of the batches"
-    )
-    parser.add_argument("--lr", type=float, default=0.0001, help="learning rate")
-    parser.add_argument(
-        "--scheduler_gamma",
-        type=float,
-        default=0.95,
-        help="scheduler factor to reduce every 10 epochs",
-    )
-
-    parser.add_argument(
-        "--clip_val",
-        type=float,
-        default=None,
-        help="gradient clip value (norm)",
-    )
-
-    parser.add_argument(
-        "--n_cpu",
-        type=int,
-        default=8,
-        help="number of cpu threads to use during batch generation",
-    )
-    parser.add_argument(
-        "--n_gpu",
-        type=int,
-        default=1,
-        help="number of gpu per node to use during training",
-    )
-    parser.add_argument("--n_nodes", type=int, default=1, help="number of nodes")
-    # parser.add_argument("--clip_value", type=float, default=0.1, help="lower and upper clip value")
-    parser.add_argument(
-        "--divide_batch",
-        type=str,
-        default="True",
-        help="if batch_size needs to be divided for distributed training",
-    )
-
-    # Model and Data
-    parser.add_argument(
-        "--data_length", type=int, default=20000, help="number of random data points"
-    )
-    parser.add_argument(
-        "--img_size", type=int, default=96, help="generated image size cubic dimension"
-    )
-    parser.add_argument(
-        "--val_indices",
-        type=str,
-        default=None,
-        help="indices to get validation set from",
-    )
-    parser.add_argument(
-        "--subset",
-        type=str,
-        default=None,
-        help="if training data needs to be split from entire microstructure, define the region",
-    )
-    parser.add_argument(
-        "--channels", type=int, default=1, help="number of image channels"
-    )
-    parser.add_argument(
-        "--dif_timesteps", type=int, default=1000, help="number of diffusion timesteps"
-    )
-    parser.add_argument(
-        "--inf_timesteps", type=int, default=50, help="number of denoising timesteps"
-    )
-    parser.add_argument("--n_blocks", type=int, default=1, help="number of unet blocks")
-    parser.add_argument(
-        "--base_dim", type=int, default=16, help="base dimension in the UNet"
-    )
-    parser.add_argument(
-        "--sample_interval", type=int, default=100, help="interval betwen image samples"
-    )
-    parser.add_argument(
-        "--sample_size",
-        type=int,
-        default=64,
-        help="number of samples that are generated",
-    )
-    parser.add_argument(
-        "--apply_sym",
-        type=str,
-        default="True",
-        help="if symmetry operations need to be applied during sampling from data (True/False)",
-    )
-    parser.add_argument(
-        "--mse_sum",
-        type=str,
-        default="False",
-        help="MSE loss is sum reduced or mean reduced",
-    )
-    parser.add_argument(
-        "--ch_mul",
-        type=str,
-        default="(1,2,2,4)",
-        help="channel_multipliers in the Unet",
-    )
-    parser.add_argument(
-        "--is_attn",
-        type=str,
-        default="(0,0,1,1)",
-        help="Whether the block has self-attention",
-    )
-
-    parser.add_argument(
-        "--dropout",
-        default=0.0,
-        help="How much dropout in each resolution",
-    )
-
-    parser.add_argument(
-        "--var_schedule",
-        type=str,
-        default="linear",
-        help="Diffusion variance schedule :- linear or cosine",
-    )
-    parser.add_argument(
-        "--beta_start", type=float, default=0.0001, help="variance schedule start"
-    )
-    parser.add_argument(
-        "--beta_end", type=float, default=0.02, help="variance schedule end"
-    )
-
+    parser = argparse.ArgumentParser(description="Run the model with a specified configuration file.")
+    parser.add_argument("--config", type=str, help="Path to the configuration file.")
     args = parser.parse_args()
 
-    if type(args.dropout) == float:
-        pass
-    else:
-        args.dropout = eval(args.dropout)
-
-    args.cross_attn = eval(args.cross_attn)
-    args.train_base_model = eval(args.train_base_model)
-    args.apply_sym = eval(args.apply_sym)
-    args.mse_sum = eval(args.mse_sum)
-    args.ch_mul = eval(args.ch_mul)
-    args.is_attn = eval(args.is_attn)
-    args.divide_batch = eval(args.divide_batch)
-
-    main()
+    config = OmegaConf.load(args.config)
+    main(config)

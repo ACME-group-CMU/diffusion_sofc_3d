@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import typing
 
 import torch
 import torch.nn as nn
@@ -16,44 +17,26 @@ class Microstructures(Dataset):
 
     def __init__(
         self,
-        data_path,
-        condition_path,
-        img_size=(64, 64, 64),
-        length=5,
-        apply_symmetry=True,
-        indices=None,
-        subset=None,
+        data_path: str,
+        condition_path: str,
+        img_size: typing.Tuple[int, int, int] = (64, 64, 64),
+        length: int = 5,
+        apply_symmetry: bool = True,
+        indices: typing.Optional[np.ndarray] = None,
+        subset: typing.Optional[str] = None,
     ):
         """
-        Dataset class that will sample a 3D subimage from the data that is a numpy array
-        in data_path
-
-        Parameters
-        ----------
-        data_path : string
-                    Should be the path to a 3D image data stored as a numpy ndarray.
-
-                    It will load the file and put search for "data" array as it is by default a
-                    numpy compressed file.
-
-        condition_path : string
-                    Should be the path to a 3D image data stored as a numpy ndarray for the segmented data.
-
-        img_size : tuple of ints
-            Size of the subvolume to be sampled.
-
-        length : int
-                 length of dataset (because of random sampling)
-
-        apply_symmetry : bool
-            If set to True, each subimage will be randomy rotated and flipped.
-
-        Returns
-        -------
-        subimage : ndarray
-            The sampled 3D subimage.
+        Initialize the Microstructures dataset.
+        
+        Args:
+            data_path (str): Path to the data.
+            condition_path (str): Path to the conditional data.
+            img_size (tuple): Size of the images.
+            length (int): Length of the dataset.
+            apply_symmetry (bool): Whether to apply symmetry.
+            indices (np.ndarray, optional): Indices for the dataset.
+            subset (str, optional): Subset of the data.
         """
-
         self.data = np.load(data_path)["data"]
         self.cond_data = np.load(condition_path)
         self.total_samples = length
@@ -63,12 +46,21 @@ class Microstructures(Dataset):
 
         if subset is not None:
             self.data = self.apply_subset(subset)
-            self.cond_data = self.apply_subset(cond_data)
+            self.cond_data = self.apply_subset(self.cond_data)
 
         if self.indices is not None:
             self.total_samples = self.indices.shape[0]
 
-    def apply_subset(self, subset):
+    def apply_subset(self, subset: str) -> np.ndarray:
+        """
+        Apply subset to the data.
+        
+        Args:
+            subset (str): Subset string.
+        
+        Returns:
+            np.ndarray: Subset of the data.
+        """
         def parse_slice(s):
             start, stop = (s.split(":") + [None])[:2]
             start = int(start) if start else None
@@ -78,11 +70,48 @@ class Microstructures(Dataset):
         slices = tuple(parse_slice(s) for s in subset.split(","))
         return self.data[slices]
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """
+        Get the length of the dataset.
+        
+        Returns:
+            int: Length of the dataset.
+        """
         return self.total_samples
 
-    def __getitem__(self, idx):
+    def apply_symmetry_transformations(self, subimage: torch.Tensor) -> torch.Tensor:
+        """
+        Apply symmetry transformations to the subimage.
+        
+        Args:
+            subimage (torch.Tensor): Subimage tensor.
+        
+        Returns:
+            torch.Tensor: Transformed subimage tensor.
+        """
+        subimage = torch.rot90(subimage, k=np.random.randint(4), dims=(1, 2))
+        subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 1))
+        subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 2))
 
+        if np.random.choice([True, False]):
+            subimage = torch.flip(subimage, dims=[0])
+        if np.random.choice([True, False]):
+            subimage = torch.flip(subimage, dims=[1])
+        if np.random.choice([True, False]):
+            subimage = torch.flip(subimage, dims=[2])
+
+        return subimage
+
+    def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get an item from the dataset.
+        
+        Args:
+            idx (int): Index of the item.
+        
+        Returns:
+            tuple: Subimage and volume fractions.
+        """
         im = self.data
         im_dims = np.array(self.data.shape)
         subimage_size = np.array(self.img_size)
@@ -108,21 +137,9 @@ class Microstructures(Dataset):
         subimage = torch.tensor(subimage)
 
         if self.apply_sym:
-            subimage = torch.rot90(subimage, k=np.random.randint(4), dims=(1, 2))
-            # subimage = np.rot90(subimage, k=np.random.randint(4), axes=(0,1))
-            # subimage = np.rot90(subimage, k=np.random.randint(4), axes=(0,2))
-            subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 1))
-            subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 2))
-
-            if np.random.choice([True, False]):
-                subimage = torch.flip(subimage, dims=[0])
-            if np.random.choice([True, False]):
-                subimage = torch.flip(subimage, dims=[1])
-            if np.random.choice([True, False]):
-                subimage = torch.flip(subimage, dims=[2])
+            subimage = self.apply_symmetry_transformations(subimage)
 
         subimage = ((subimage / 255) * 2) - 1
-
         subimage = torch.unsqueeze(subimage, 0)
 
         vol_fracs = np.array([(cond_subimage == i).sum() for i in range(1, 4)])
