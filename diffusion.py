@@ -250,19 +250,10 @@ class Diffusion(LightningModule):
             # Estimate volume fractions from the generated images
             # Each GPU processes its own batch
             gen_vols = generated_images.clone().cpu().detach().numpy().squeeze()
-            
-            # Try to estimate conditions with error handling
-            try:
-                gen_conditions_local = self.condition_fn(gen_vols)
-                # Convert to tensors for distributed operations
-                gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)
-                success_flag = torch.tensor(1.0).to(self.device)
-            except Exception as e:
-                print(f"Error in condition_fn on rank {self.trainer.global_rank}: {e}")
-                # Create dummy tensors with NaN values to indicate failure
-                gen_conditions_tensor = torch.full_like(conditions, float('nan')).to(self.device)
-                success_flag = torch.tensor(0.0).to(self.device)
+            gen_conditions_local = self.condition_fn(gen_vols)
 
+            # Convert to tensors for distributed operations
+            gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)
             conditions_tensor = conditions.to(self.device)
 
             # Gather results from all GPUs
@@ -270,41 +261,23 @@ class Diffusion(LightningModule):
                 # All-gather the generated conditions from all GPUs
                 gen_conditions_gathered = self.all_gather(gen_conditions_tensor)
                 conditions_gathered = self.all_gather(conditions_tensor)
-                success_flags_gathered = self.all_gather(success_flag)
+
                 # Flatten the gathered tensors
                 # Shape will be (world_size, batch_size, condition_dim) -> (world_size * batch_size, condition_dim)
-                gen_conditions_all = gen_conditions_gathered.view(-1, gen_conditions_gathered.shape[-1])
-                conditions_all = conditions_gathered.view(-1, conditions_gathered.shape[-1])
-                success_flags_all = success_flags_gathered.view(-1)
-                
-                # Filter out failed GPUs (those with NaN values)
-                valid_mask = success_flags_all == 1.0
-                
-                if valid_mask.sum() > 0:
-                    # Expand mask to match the batch dimension
-                    batch_size_per_gpu = gen_conditions_gathered.shape[1]
-                    valid_batch_mask = valid_mask.repeat_interleave(batch_size_per_gpu)
-                    
-                    gen_conditions_final = gen_conditions_all[valid_batch_mask]
-                    conditions_final = conditions_all[valid_batch_mask]
-                else:
-                    print("All GPUs failed during condition estimation, skipping generation loss...")
-                    if self.ema and self.hparams.validate_with_ema:
-                        self.ema.restore()
-                    return
+                gen_conditions_all = gen_conditions_gathered.view(
+                    -1, gen_conditions_gathered.shape[-1]
+                )
+                conditions_all = conditions_gathered.view(
+                    -1, conditions_gathered.shape[-1]
+                )
             else:
                 # Single GPU case
-                if success_flag == 1.0:
-                    gen_conditions_final = gen_conditions_tensor
-                    conditions_final = conditions_tensor
-                else:
-                    print("Single GPU failed during condition estimation, skipping generation loss...")
-                    if self.ema and self.hparams.validate_with_ema:
-                        self.ema.restore()
-                    return
+                gen_conditions_all = gen_conditions_tensor
+                conditions_all = conditions_tensor
 
-            # Calculate the MSE loss only on valid samples
-            loss = self.mse(gen_conditions_final.flatten(), conditions_final.flatten())
+            # Calculate the MSE loss between estimated and true volume fractions
+            # This calculation happens on all GPUs but with the same gathered data
+            loss = self.mse(gen_conditions_all.flatten(), conditions_all.flatten())
 
             # Log the results (sync_dist=True will handle averaging across GPUs)
             self.log(
