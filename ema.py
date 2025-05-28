@@ -5,6 +5,7 @@ import warnings
 warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision("medium")
 
+
 class EMA:
     def __init__(self, model, decay=0.995):
         self.model = model

@@ -89,7 +89,7 @@ def main(config):
     if config.logging.uncond_path is not None and config.logging.ckpt is None:
         model.load_unconditional_weights(config.logging.uncond_path)
 
-    #Compile the model
+    # Compile the model
     model = torch.compile(model, mode="reduce-overhead")
 
     if (config.training.n_gpu * config.training.n_nodes) > 1:
@@ -111,7 +111,6 @@ def main(config):
         filename="best_val_loss-{epoch:03d}-{val_loss:.6f}",
     )
 
-
     checkpoint_callback = ModelCheckpoint(
         save_top_k=-1,
         monitor="epoch",
@@ -129,7 +128,7 @@ def main(config):
 
     refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
-    
+
     trainer = Trainer(
         default_root_dir=config.logging.dir,
         accelerator="auto",
@@ -143,7 +142,7 @@ def main(config):
             checkpoint_callback,
             best_callback,
             best_val_callback,
-            #swa_callback,
+            # swa_callback,
         ],
         precision=config.training.precision,
         gradient_clip_val=config.training.clip_val,
@@ -226,6 +225,7 @@ class MicroData(LightningDataModule):
             pin_memory=True,
             shuffle=True,
         )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

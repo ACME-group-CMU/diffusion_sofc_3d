@@ -151,10 +151,9 @@ class Microstructures(Dataset):
 
 
 class BuildDataset(Dataset):
-    
     def __init__(
         self,
-        data_path:str,
+        data_path: str,
         conditional_csv: str,
         characteristics: list,
         apply_symmetry: bool = True,
@@ -171,9 +170,11 @@ class BuildDataset(Dataset):
         self.data_path = data_path
 
         if len(characteristics) != 0:
-            self.cond_data = pd.read_csv(conditional_csv)[['#filename',*characteristics]]
+            self.cond_data = pd.read_csv(conditional_csv)[
+                ["#filename", *characteristics]
+            ]
         else:
-            self.cond_data = pd.read_csv(conditional_csv)[['#filename']]
+            self.cond_data = pd.read_csv(conditional_csv)[["#filename"]]
         self.apply_sym = apply_symmetry
 
     def __len__(self) -> int:
@@ -217,14 +218,14 @@ class BuildDataset(Dataset):
         Returns:
             tuple: Subimage and volume fractions.
         """
-        filename = self.cond_data.iloc[idx]['#filename']
+        filename = self.cond_data.iloc[idx]["#filename"]
         if self.cond_data.shape[1] > 1:
-            conditions = self.cond_data.iloc[idx,1:].values.astype(np.float32)
+            conditions = self.cond_data.iloc[idx, 1:].values.astype(np.float32)
             conditions = torch.tensor(conditions, dtype=torch.float32)
         else:
             conditions = None
-        
-        filepath = os.path.expanduser(os.path.join(self.data_path,filename))
+
+        filepath = os.path.expanduser(os.path.join(self.data_path, filename))
         subimage = np.load(filepath)
         subimage = torch.tensor(subimage)
 
@@ -233,8 +234,8 @@ class BuildDataset(Dataset):
 
         subimage = ((subimage / 255) * 2) - 1
 
-        #Ensure that the subimage is 4D tensor
-        subimage = torch.squeeze(subimage)  
+        # Ensure that the subimage is 4D tensor
+        subimage = torch.squeeze(subimage)
         subimage = torch.unsqueeze(subimage, 0)
 
         assert subimage.dim() == 4, "Subimage must be a 4D tensor (C, H, W, D)"

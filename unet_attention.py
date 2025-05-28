@@ -475,8 +475,7 @@ class UNet(nn.Module):
             c = self.condition_emb(c)
             t = self.time_concat(torch.concat((t, c), dim=1))
             if (self.cross_attn is not None) and (c is not None):
-                x = self.cross_attn(x, c) 
-
+                x = self.cross_attn(x, c)
 
         # `h` will store outputs at each resolution for skip connection
         h = [x]

@@ -22,6 +22,7 @@ warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision("medium")
 from ema import EMA
 
+
 class Diffusion(LightningModule):
     def __init__(
         self,
@@ -47,7 +48,7 @@ class Diffusion(LightningModule):
         cross_attn=False,
         train_base_model=False,
         conditional_validation_frequency: int = 5,
-        use_ema: bool = True,  #import EMA flag
+        use_ema: bool = True,  # import EMA flag
         ema_decay: float = 0.995,  # Add EMA decay rate
         validate_with_ema: bool = True,  # Add validation with EMA flag
         condition_fn: typing.Optional[str] = None,
@@ -97,7 +98,7 @@ class Diffusion(LightningModule):
         self.condition_dim = condition_dim
 
         self.train_base_model = train_base_model
-        
+
         try:
             self.condition_fn = eval(condition_fn)
         except:
@@ -109,10 +110,14 @@ class Diffusion(LightningModule):
 
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "frequency": 5, "interval": "epoch"},
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "frequency": 5,
+                "interval": "epoch",
+            },
         }
-    
-    def get_input(self,batch):
+
+    def get_input(self, batch):
 
         if self.condition_dim is not None:
             imgs, condition = batch
@@ -125,8 +130,8 @@ class Diffusion(LightningModule):
             condition = None
 
         return imgs, condition
-    
-    def shared_step(self,batch,model):
+
+    def shared_step(self, batch, model):
 
         imgs, condition = self.get_input(batch)
         bs = imgs.shape[0]
@@ -150,10 +155,9 @@ class Diffusion(LightningModule):
 
         return loss
 
-
     def training_step(self, batch, batch_idx):
 
-        loss = self.shared_step(batch,self.unet)
+        loss = self.shared_step(batch, self.unet)
 
         self.log(
             "loss",
@@ -176,7 +180,7 @@ class Diffusion(LightningModule):
         else:
             model = self.unet.eval()
 
-        loss = self.shared_step(batch,model)
+        loss = self.shared_step(batch, model)
 
         self.log(
             "val_loss",
@@ -192,8 +196,8 @@ class Diffusion(LightningModule):
             self.ema.restore()
 
         return loss
-    
-    def on_train_batch_end(self,*args, **kwargs):
+
+    def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
             self.ema.update()
 
@@ -201,29 +205,36 @@ class Diffusion(LightningModule):
     def on_train_epoch_end(self):
         # Check if we should perform conditional validation this epoch
         if (self.condition_dim is not None) and (
-            (self.current_epoch + 1) % self.hparams.conditional_validation_frequency == 0
+            (self.current_epoch + 1) % self.hparams.conditional_validation_frequency
+            == 0
         ):
-            
+
             # EMA shadow model context
             if self.ema and self.hparams.validate_with_ema:
                 self.ema.apply_shadow()
                 model = self.ema.model
             else:
                 model = self.unet.eval()
-                
+
             # Get a random batch from the validation dataloader
             # Each GPU gets its own batch
-            val_dataloader = self.trainer.val_dataloaders[0] if isinstance(self.trainer.val_dataloaders, list) else self.trainer.val_dataloaders
-            
+            val_dataloader = (
+                self.trainer.val_dataloaders[0]
+                if isinstance(self.trainer.val_dataloaders, list)
+                else self.trainer.val_dataloaders
+            )
+
             try:
                 imgs, conditions = next(iter(val_dataloader))
             except (StopIteration, IndexError):
                 if self.trainer.is_global_zero:
-                    print("No validation data available, skipping conditional validation.")
+                    print(
+                        "No validation data available, skipping conditional validation."
+                    )
                 if self.ema and self.hparams.validate_with_ema:
                     self.ema.restore()
                 return
-                
+
             sample_shape = imgs.shape
 
             # Generate samples using the diffusion model
@@ -240,30 +251,34 @@ class Diffusion(LightningModule):
             # Each GPU processes its own batch
             gen_vols = generated_images.clone().cpu().detach().numpy().squeeze()
             gen_conditions_local = self.condition_fn(gen_vols)
-            
+
             # Convert to tensors for distributed operations
             gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)
             conditions_tensor = conditions.to(self.device)
-            
+
             # Gather results from all GPUs
             if self.trainer.world_size > 1:
                 # All-gather the generated conditions from all GPUs
                 gen_conditions_gathered = self.all_gather(gen_conditions_tensor)
                 conditions_gathered = self.all_gather(conditions_tensor)
-                
+
                 # Flatten the gathered tensors
                 # Shape will be (world_size, batch_size, condition_dim) -> (world_size * batch_size, condition_dim)
-                gen_conditions_all = gen_conditions_gathered.view(-1, gen_conditions_gathered.shape[-1])
-                conditions_all = conditions_gathered.view(-1, conditions_gathered.shape[-1])
+                gen_conditions_all = gen_conditions_gathered.view(
+                    -1, gen_conditions_gathered.shape[-1]
+                )
+                conditions_all = conditions_gathered.view(
+                    -1, conditions_gathered.shape[-1]
+                )
             else:
                 # Single GPU case
                 gen_conditions_all = gen_conditions_tensor
                 conditions_all = conditions_tensor
-            
+
             # Calculate the MSE loss between estimated and true volume fractions
             # This calculation happens on all GPUs but with the same gathered data
             loss = self.mse(gen_conditions_all.flatten(), conditions_all.flatten())
-            
+
             # Log the results (sync_dist=True will handle averaging across GPUs)
             self.log(
                 "generation_loss",
@@ -273,7 +288,7 @@ class Diffusion(LightningModule):
                 logger=True,
                 sync_dist=True,
             )
-            
+
             if self.trainer.is_global_zero:
                 total_samples = gen_conditions_all.shape[0]
                 self.log(
@@ -286,7 +301,6 @@ class Diffusion(LightningModule):
             # Restore original model if using EMA
             if self.ema and self.hparams.validate_with_ema:
                 self.ema.restore()
-
 
     @torch.no_grad()
     def generate(
@@ -350,7 +364,7 @@ class Diffusion(LightningModule):
 
         # Unfreeze the conditional layers if they exist
         trainable_params_found = False
-        
+
         if hasattr(self.unet, "condition_emb") and self.unet.condition_emb is not None:
             for param in self.unet.condition_emb.parameters():
                 param.requires_grad = True
@@ -365,10 +379,12 @@ class Diffusion(LightningModule):
             for param in self.unet.time_concat.parameters():
                 param.requires_grad = True
                 trainable_params_found = True
-        
+
         # Ensure we have at least some trainable parameters
         if not trainable_params_found:
-            print("Warning: No conditional layers found. Making all parameters trainable.")
+            print(
+                "Warning: No conditional layers found. Making all parameters trainable."
+            )
             for param in self.unet.parameters():
                 param.requires_grad = True
 
