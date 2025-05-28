@@ -5,6 +5,7 @@ import typing
 import json
 from omegaconf import OmegaConf
 import argparse
+import glob
 
 import torch
 import torch.nn as nn
@@ -16,6 +17,8 @@ from pytorch_lightning import (
     Trainer,
     seed_everything,
 )
+
+from lightning.pytorch.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 
@@ -129,8 +132,37 @@ def main(config):
     refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
 
+
+    # Determine the version number for the logger
+    root_dir = os.path.join(config.logging.dir, "lightning_logs")
+    if not os.path.exists(root_dir):
+        os.makedirs(root_dir)
+    
+    # Find existing version folders
+    version_folders = glob.glob(os.path.join(root_dir, "version_*"))
+    
+    # Extract version numbers
+    version_numbers = []
+    for folder in version_folders:
+        folder_name = os.path.basename(folder)
+        if folder_name.startswith("version_"):
+            try:
+                version_numbers.append(int(folder_name.split("_")[1]))
+            except (IndexError, ValueError):
+                continue
+    
+    # Calculate the next version number
+    next_version = 0 if not version_numbers else max(version_numbers) + 1
+    
+    # Create logger with explicit versioning
+    logger = TensorBoardLogger(
+        save_dir=config.logging.dir,
+        name="lightning_logs",
+        version=f"version_{next_version}"
+    )
+
     trainer = Trainer(
-        default_root_dir=config.logging.dir,
+        logger = logger,
         accelerator="auto",
         devices=config.training.n_gpu,
         num_nodes=config.training.n_nodes,

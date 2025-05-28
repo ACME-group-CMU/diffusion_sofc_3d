@@ -259,8 +259,8 @@ class Diffusion(LightningModule):
             # Gather results from all GPUs
             if self.trainer.world_size > 1:
                 # All-gather the generated conditions from all GPUs
-                gen_conditions_gathered = self.all_gather(gen_conditions_tensor)
-                conditions_gathered = self.all_gather(conditions_tensor)
+                gen_conditions_gathered = self.all_gather(gen_conditions_tensor).cpu()
+                conditions_gathered = self.all_gather(conditions_tensor).cpu()
 
                 # Flatten the gathered tensors
                 # Shape will be (world_size, batch_size, condition_dim) -> (world_size * batch_size, condition_dim)
@@ -272,8 +272,8 @@ class Diffusion(LightningModule):
                 )
             else:
                 # Single GPU case
-                gen_conditions_all = gen_conditions_tensor
-                conditions_all = conditions_tensor
+                gen_conditions_all = gen_conditions_tensor.cpu()
+                conditions_all = conditions_tensor.cpu()
 
             # Calculate the MSE loss between estimated and true volume fractions
             # This calculation happens on all GPUs but with the same gathered data

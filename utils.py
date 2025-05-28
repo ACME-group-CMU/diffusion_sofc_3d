@@ -16,7 +16,7 @@ def vfs(array: np.array):
     seg_vols = segment(array)
     vfs = get_vf_array(seg_vols)
 
-    return vfs * 100
+    return vfs
 
 
 def vf_otsu(microstructures):
@@ -86,6 +86,8 @@ def get_vf_array(array):
     """
 
     A = map(get_vfs, array)
+    A = list(A)
+    
     return np.array(list(A))
 
 

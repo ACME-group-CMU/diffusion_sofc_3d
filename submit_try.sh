@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --partition=batch
+#SBATCH --partition=acmegroup
 #SBATCH --gres=gpu:1
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=100G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
 #SBATCH --time=2-00:00:00
 #SBATCH --output ./Outputs/%j.out
 #SBATCH --error ./Outputs/%j.err
@@ -12,10 +12,10 @@
 #SBATCH --mail-type=ALL
 
 module purge
-module load aocc/3.2.0 cuda/11.7
-module load anaconda3/2021.05
+module load aocc/4.0.0 cuda/12.8
+module load anaconda3
 source activate torch2
 
-cd ~/Diffusion
+cd ~/test/conditional_diffusion
 
-srun python3 main.py --config config.yaml
+srun python3 main.py --config configs/config_test.yaml
