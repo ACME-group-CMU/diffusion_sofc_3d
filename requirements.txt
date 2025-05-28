@@ -1,0 +1,12 @@
+connected_components_3d==3.23.0
+diffusers==0.32.2
+matplotlib==3.10.3
+numpy==2.2.6
+omegaconf==2.3.0
+opencv_python==4.11.0.86
+pandas==2.2.3
+pqdm==0.2.0
+scipy==1.15.3
+skimage==0.0
+tifffile==2025.2.18
+tqdm==4.67.1
