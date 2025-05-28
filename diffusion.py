@@ -250,11 +250,11 @@ class Diffusion(LightningModule):
             # Estimate volume fractions from the generated images
             # Each GPU processes its own batch
             gen_vols = generated_images.clone().cpu().detach().numpy().squeeze()
-            gen_conditions_local = self.condition_fn(gen_vols)
+            gen_conditions_local, correct_segment = self.condition_fn(gen_vols)
 
             # Convert to tensors for distributed operations
-            gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)
-            conditions_tensor = conditions.to(self.device)
+            gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)[correct_segment]
+            conditions_tensor = conditions.to(self.device)[correct_segment]
 
             # Gather results from all GPUs
             if self.trainer.world_size > 1:

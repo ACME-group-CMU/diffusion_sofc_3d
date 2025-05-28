@@ -13,10 +13,10 @@ def vfs(array: np.array):
     Array should be of the shape (N,H,W,D)
     """
 
-    seg_vols = segment(array)
+    seg_vols, correct_seg = segment(array)
     vfs = get_vf_array(seg_vols)
 
-    return vfs
+    return vfs, correct_seg
 
 
 def vf_otsu(microstructures):
@@ -196,30 +196,38 @@ def segment(array: np.array):
     """
 
     seg_vols = []
-    for subvol in array:
+    seg_correct = np.ones(array.shape[0], dtype=bool)
 
-        grads = seg.sobel_gradients(subvol)
-        # Run gradient threshold sweep
-        thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 1.0, 100)
+    for num, subvol in enumerate(array):
 
-        # Plot threshold swep results and find maximum marker threshold.
-        max_marker_thresh = max_marker_grad_thresh(thresholds, num_markers)
+        try:
+            grads = seg.sobel_gradients(subvol)
+            # Run gradient threshold sweep
+            thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 1.0, 100)
 
-        # Watershed image
-        avg_grey, marker_size, size, seg_img, avg_img = watershed_volume(
-            subvol, grads, max_marker_thresh
-        )
+            # Plot threshold swep results and find maximum marker threshold.
+            max_marker_thresh = max_marker_grad_thresh(thresholds, num_markers)
 
-        # Find minima
-        bg_thresh, gw_thresh = analyze_post_watershed_dist(avg_grey, size)
+            # Watershed image
+            avg_grey, marker_size, size, seg_img, avg_img = watershed_volume(
+                subvol, grads, max_marker_thresh
+            )
 
-        assert (
-            avg_img.shape == subvol.shape
-        ), "avg_img and subvol should be the same shape"
-        # Phase-ID image
-        seg_img = seg.threshold_volume(avg_img, bg_thresh, gw_thresh)
+            # Find minima
+            bg_thresh, gw_thresh = analyze_post_watershed_dist(avg_grey, size)
+
+            assert (
+                avg_img.shape == subvol.shape
+            ), "avg_img and subvol should be the same shape"
+            # Phase-ID image
+            seg_img = seg.threshold_volume(avg_img, bg_thresh, gw_thresh)
+            assert np.unique(seg_img).size == 3, 'Segmentation should yield 3 phases'
+        except Exception as e:
+            seg_img = np.random.randint(1,3, subvol.shape, dtype=np.uint8)
+            seg_correct[num] = 0
 
         seg_vols.append(seg_img)
+        
 
     seg_vols = np.array(seg_vols)
-    return seg_vols
+    return seg_vols, seg_correct

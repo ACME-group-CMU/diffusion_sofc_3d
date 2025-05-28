@@ -49,9 +49,34 @@ def main(config):
     else:
         pass
 
-    print(json.dumps(config, indent=2, default=str))
-
     seed_everything(config.training.random_state, workers=True)
+    
+    # Create logger with auto-incremented version
+    # Check if running in SLURM environment
+    slurm_procid = os.environ.get('SLURM_PROCID')
+    if slurm_procid is not None:
+        # For SLURM multi-node/multi-process, only global rank 0 creates the version
+        global_rank = int(slurm_procid)
+        if global_rank == 0:
+            version = get_next_version(config.logging.dir)
+        else:
+            version = 0  # Default version for non-rank-0 processes
+        
+        logger = TensorBoardLogger(
+                save_dir=config.logging.dir,
+                name="lightning_logs",
+                version=f"version_{version}",)
+    else:
+        logger = True
+
+    # Save config to the experiment directory
+    if slurm_procid is None or int(slurm_procid) == 0:
+        # Ensure the directory exists
+        print(f"Saving config to {logger.log_dir}")
+        os.makedirs(logger.log_dir, exist_ok=True)
+        config_path = os.path.join(logger.log_dir, "config.yaml")
+        OmegaConf.save(config, config_path)
+    
     image_size = [config.data.img_size] * 3
 
     dm = MicroData(
@@ -132,37 +157,9 @@ def main(config):
     refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
 
-
-    # Determine the version number for the logger
-    root_dir = os.path.join(config.logging.dir, "lightning_logs")
-    if not os.path.exists(root_dir):
-        os.makedirs(root_dir)
-    
-    # Find existing version folders
-    version_folders = glob.glob(os.path.join(root_dir, "version_*"))
-    
-    # Extract version numbers
-    version_numbers = []
-    for folder in version_folders:
-        folder_name = os.path.basename(folder)
-        if folder_name.startswith("version_"):
-            try:
-                version_numbers.append(int(folder_name.split("_")[1]))
-            except (IndexError, ValueError):
-                continue
-    
-    # Calculate the next version number
-    next_version = 0 if not version_numbers else max(version_numbers) + 1
-    
-    # Create logger with explicit versioning
-    logger = TensorBoardLogger(
-        save_dir=config.logging.dir,
-        name="lightning_logs",
-        version=f"version_{next_version}"
-    )
-
     trainer = Trainer(
-        logger = logger,
+        logger=logger,
+        default_root_dir=config.logging.dir,
         accelerator="auto",
         devices=config.training.n_gpu,
         num_nodes=config.training.n_nodes,
@@ -181,6 +178,42 @@ def main(config):
     )
 
     trainer.fit(model, dm, ckpt_path=config.logging.ckpt)
+
+
+def get_next_version(save_dir):
+    """
+    Get the next version number by checking existing version directories.
+    
+    Args:
+        save_dir (str): Base directory where lightning_logs will be created
+        
+    Returns:
+        int: Next version number
+    """
+    lightning_logs_dir = os.path.join(save_dir, "lightning_logs")
+    
+    if not os.path.exists(lightning_logs_dir):
+        os.makedirs(lightning_logs_dir, exist_ok=True)
+        return 0
+    
+    # Find existing version directories
+    version_dirs = glob.glob(os.path.join(lightning_logs_dir, "version_*"))
+    
+    if not version_dirs:
+        return 0
+    
+    # Extract version numbers and find the maximum
+    version_numbers = []
+    for version_dir in version_dirs:
+        dir_name = os.path.basename(version_dir)
+        if dir_name.startswith("version_"):
+            try:
+                version_num = int(dir_name.split("_")[1])
+                version_numbers.append(version_num)
+            except (ValueError, IndexError):
+                continue
+    
+    return max(version_numbers) + 1 if version_numbers else 0
 
 
 class MicroData(LightningDataModule):
