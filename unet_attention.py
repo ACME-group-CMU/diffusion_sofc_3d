@@ -12,7 +12,7 @@ class TimeEmbedding(nn.Module):
     def __init__(self, n_channels: int):
         """
         Initialize the TimeEmbedding module.
-        
+
         Args:
             n_channels (int): Number of channels for the embedding.
         """
@@ -28,10 +28,10 @@ class TimeEmbedding(nn.Module):
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the TimeEmbedding module.
-        
+
         Args:
             t (torch.Tensor): Input tensor.
-        
+
         Returns:
             torch.Tensor: Output tensor after embedding.
         """
@@ -49,18 +49,18 @@ class ConditionEmbedding(nn.Module):
     def __init__(self, n_channels: int, condition_dim: int):
         """
         Initialize the ConditionEmbedding module.
-        
+
         Args:
             n_channels (int): Number of channels for the embedding.
             condition_dim (int): Dimension of the condition.
         """
         super().__init__()
         self.model = nn.Sequential(
-            nn.Linear(condition_dim, n_channels * 2),
+            nn.Linear(condition_dim, n_channels * 4),
             nn.SiLU(),
-            nn.Linear(n_channels * 2, n_channels * 2),
+            nn.Linear(n_channels * 4, n_channels * 4),
             nn.SiLU(),
-            nn.Linear(n_channels * 2, n_channels * 2),
+            nn.Linear(n_channels * 4, n_channels * 2),
             nn.SiLU(),
             nn.Linear(n_channels * 2, n_channels),
         )
@@ -68,10 +68,10 @@ class ConditionEmbedding(nn.Module):
     def forward(self, c: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the ConditionEmbedding module.
-        
+
         Args:
             c (torch.Tensor): Input tensor.
-        
+
         Returns:
             torch.Tensor: Output tensor after embedding.
         """
@@ -395,7 +395,7 @@ class UNet(nn.Module):
                 else None
             )
             self.time_concat = nn.Linear(n_channels * 8, n_channels * 4)
-            
+
         else:
             self.condition_emb = None
             self.cross_attn = None
@@ -457,7 +457,9 @@ class UNet(nn.Module):
         self.act = nn.SiLU()
         self.final = nn.Conv3d(in_channels, image_channels, kernel_size=3, padding=1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None
+    ) -> torch.Tensor:
         """
         * `x` has shape `[batch_size, in_channels, height, width,depth]`
         * `t` has shape `[batch_size]`
@@ -472,9 +474,9 @@ class UNet(nn.Module):
         if (self.condition_emb is not None) and (c is not None):
             c = self.condition_emb(c)
             t = self.time_concat(torch.concat((t, c), dim=1))
+            if (self.cross_attn is not None) and (c is not None):
+                x = self.cross_attn(x, c) 
 
-            if self.cross_attn is not None:
-                x = self.cross_attn(x, c)
 
         # `h` will store outputs at each resolution for skip connection
         h = [x]
@@ -494,7 +496,6 @@ class UNet(nn.Module):
                 # Get the skip connection from first half of U-Net and concatenate
                 s = h.pop()
                 x = torch.cat((x, s), dim=1)
-                #
                 x = m(x, t)
 
         # Final normalization and convolution

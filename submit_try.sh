@@ -14,7 +14,7 @@
 module purge
 module load aocc/3.2.0 cuda/11.7
 module load anaconda3/2021.05
-source activate rbenv
+source activate torch2
 
 cd ~/Diffusion
 
