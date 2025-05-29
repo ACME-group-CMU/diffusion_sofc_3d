@@ -3,6 +3,7 @@ import numpy as np
 from tqdm.auto import tqdm
 import typing
 import json
+import time
 from omegaconf import OmegaConf
 import argparse
 import glob
@@ -50,36 +51,6 @@ def main(config):
         pass
 
     seed_everything(config.training.random_state, workers=True)
-    
-    # Create logger with auto-incremented version
-    # Check if running in SLURM environment
-    slurm_procid = os.environ.get('SLURM_PROCID')
-    slurm_localid = os.environ.get('SLURM_LOCALID')
-    print(f"SLURM_PROCID: {slurm_procid}, LOCAL_RANK: {slurm_localid}")
-
-    logger = True
-
-    if slurm_procid is not None:
-        # For SLURM multi-node/multi-process, only global rank 0 creates the version
-        global_rank = int(slurm_procid)
-        local_rank = int(slurm_localid)
-        if global_rank == 0 and local_rank == 0:
-            version = get_next_version(config.logging.dir)
-            logger = TensorBoardLogger(
-                    save_dir=config.logging.dir,
-                    name="lightning_logs",
-                    version=f"version_{version}",)
-    else:
-        pass
-
-    # Save config to the experiment directory
-    if (int(slurm_procid) == 0) and (int(slurm_localid) == 0):
-        # Ensure the directory exists
-        print(f"Saving config to {logger.log_dir}")
-        os.makedirs(logger.log_dir, exist_ok=True)
-        config_path = os.path.join(logger.log_dir, "config.yaml")
-        OmegaConf.save(config, config_path)
-    
     image_size = [config.data.img_size] * 3
 
     dm = MicroData(
@@ -124,7 +95,7 @@ def main(config):
     model = torch.compile(model)
 
     if (config.training.n_gpu * config.training.n_nodes) > 1:
-        strategy = "ddp"
+        strategy = "ddp_find_unused_parameters_true"
     else:
         strategy = "auto"
 
@@ -159,6 +130,17 @@ def main(config):
 
     refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
+
+    logger = TensorBoardLogger(
+        save_dir=config.logging.dir,
+        name="lightning_logs",
+        version=f"version_{config.logging.version}",
+    )
+
+    print(f"Saving config to {logger.log_dir}")
+    os.makedirs(logger.log_dir, exist_ok=True)
+    config_path = os.path.join(logger.log_dir, "config.yaml")
+    OmegaConf.save(config, config_path)
 
     trainer = Trainer(
         logger=logger,
@@ -303,4 +285,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = OmegaConf.load(args.config)
+
+    version = get_next_version(config.logging.dir)
+    config.logging.version = version
+
     main(config)

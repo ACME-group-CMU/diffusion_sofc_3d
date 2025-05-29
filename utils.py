@@ -105,7 +105,7 @@ def threshold_sweep_inline(grads, b_thresh, t_thresh, n_thresh):
     inputs = [(grads, threshold) for threshold in thresholds]
     # Gets an array of the number of markers for each threshold
     num_markers = pqdm(
-        inputs, seg.gradient_threshold, n_jobs=mp.cpu_count(), disable=True
+        inputs, seg.gradient_threshold, n_jobs=4, disable=True
     )
 
     return thresholds, num_markers
@@ -197,6 +197,8 @@ def segment(array: np.array):
 
     seg_vols = []
     seg_correct = np.ones(array.shape[0], dtype=bool)
+
+    print(mp.cpu_count(), "CPUs available for segmentation")
 
     for num, subvol in enumerate(array):
 
