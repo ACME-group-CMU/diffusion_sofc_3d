@@ -236,6 +236,7 @@ class Diffusion(LightningModule):
                 return
 
             sample_shape = imgs.shape
+            assert conditions.shape[0]== sample_shape[0], "Conditions batch size does not match images batch size."
 
             # Generate samples using the diffusion model
             # Each GPU generates its own batch
@@ -249,7 +250,13 @@ class Diffusion(LightningModule):
 
             # Estimate volume fractions from the generated images
             # Each GPU processes its own batch
-            gen_vols = generated_images.clone().cpu().detach().numpy().squeeze()
+            gen_vols = generated_images.clone().cpu().detach().numpy()
+            if gen_vols.ndim > 4:
+                gen_vols = gen_vols.squeeze()
+            else:
+                raise ValueError(
+                    f"Generated volumes should be 4D (N,H, W, D), got less {gen_vols.ndim} dimensions.")
+            
             gen_conditions_local, correct_segment = self.condition_fn(gen_vols)
 
             # Convert to tensors for distributed operations

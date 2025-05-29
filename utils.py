@@ -88,7 +88,7 @@ def get_vf_array(array):
     A = map(get_vfs, array)
     A = list(A)
     
-    return np.array(list(A))
+    return np.array(A)
 
 
 def threshold_sweep_inline(grads, b_thresh, t_thresh, n_thresh):
@@ -223,7 +223,7 @@ def segment(array: np.array):
             ), "avg_img and subvol should be the same shape"
             # Phase-ID image
             seg_img = seg.threshold_volume(avg_img, bg_thresh, gw_thresh)
-            assert np.unique(seg_img).size == 3, 'Segmentation should yield 3 phases'
+            assert len(np.unique(seg_img)) == 3, 'Segmentation should yield 3 phases'
         except Exception as e:
             seg_img = np.random.randint(1,3, subvol.shape, dtype=np.uint8)
             seg_correct[num] = 0
