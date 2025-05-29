@@ -55,24 +55,25 @@ def main(config):
     # Check if running in SLURM environment
     slurm_procid = os.environ.get('SLURM_PROCID')
     slurm_localid = os.environ.get('SLURM_LOCALID')
+    print(f"SLURM_PROCID: {slurm_procid}, LOCAL_RANK: {slurm_localid}")
+
+    logger = True
+
     if slurm_procid is not None:
         # For SLURM multi-node/multi-process, only global rank 0 creates the version
         global_rank = int(slurm_procid)
-        local_rank = int(slurm_localid) if slurm_localid is not None else 0
+        local_rank = int(slurm_localid)
         if global_rank == 0 and local_rank == 0:
             version = get_next_version(config.logging.dir)
-        else:
-            version = 0  # Default version for non-rank-0 processes
-        
-        logger = TensorBoardLogger(
-                save_dir=config.logging.dir,
-                name="lightning_logs",
-                version=f"version_{version}",)
+            logger = TensorBoardLogger(
+                    save_dir=config.logging.dir,
+                    name="lightning_logs",
+                    version=f"version_{version}",)
     else:
-        logger = True
+        pass
 
     # Save config to the experiment directory
-    if slurm_procid is None or (int(slurm_procid) == 0 and (slurm_localid is None or int(slurm_localid) == 0)):
+    if (int(slurm_procid) == 0) and (int(slurm_localid) == 0):
         # Ensure the directory exists
         print(f"Saving config to {logger.log_dir}")
         os.makedirs(logger.log_dir, exist_ok=True)
@@ -120,7 +121,7 @@ def main(config):
         model.load_unconditional_weights(config.logging.uncond_path)
 
     # Compile the model
-    model = torch.compile(model, mode="reduce-overhead")
+    model = torch.compile(model)
 
     if (config.training.n_gpu * config.training.n_nodes) > 1:
         strategy = "ddp"
