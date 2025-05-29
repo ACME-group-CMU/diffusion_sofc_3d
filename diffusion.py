@@ -218,11 +218,7 @@ class Diffusion(LightningModule):
 
             # Get a random batch from the validation dataloader
             # Each GPU gets its own batch
-            val_dataloader = (
-                self.trainer.val_dataloaders[0]
-                if isinstance(self.trainer.val_dataloaders, list)
-                else self.trainer.val_dataloaders
-            )
+            val_dataloader = self.trainer.val_dataloaders
 
             try:
                 imgs, conditions = next(iter(val_dataloader))
@@ -236,7 +232,7 @@ class Diffusion(LightningModule):
                 return
 
             sample_shape = imgs.shape
-            assert conditions.shape[0]== sample_shape[0], "Conditions batch size does not match images batch size."
+
 
             # Generate samples using the diffusion model
             # Each GPU generates its own batch
@@ -251,40 +247,29 @@ class Diffusion(LightningModule):
             # Estimate volume fractions from the generated images
             # Each GPU processes its own batch
             gen_vols = generated_images.clone().cpu().detach().numpy()
-            if gen_vols.ndim > 4:
-                gen_vols = gen_vols.squeeze()
-            else:
-                raise ValueError(
-                    f"Generated volumes should be 4D (N,H, W, D), got less {gen_vols.ndim} dimensions.")
+            
+            if gen_vols.ndim !=4:
+                if gen_vols.ndim > 4:
+                    gen_vols = gen_vols.squeeze()
+                elif gen_vols.ndim ==3:
+                    gen_vols = gen_vols[None,...]
+                else:
+                    raise ValueError(
+                        f"Generated volumes should be 4D (N,H, W, D), got less {gen_vols.ndim} dimensions.")
             
             gen_conditions_local, correct_segment = self.condition_fn(gen_vols)
 
             # Convert to tensors for distributed operations
-            gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)[correct_segment]
-            conditions_tensor = conditions.to(self.device)[correct_segment]
-
-            # Gather results from all GPUs
-            if self.trainer.world_size > 1:
-                # All-gather the generated conditions from all GPUs
-                gen_conditions_gathered = self.all_gather(gen_conditions_tensor).cpu()
-                conditions_gathered = self.all_gather(conditions_tensor).cpu()
-
-                # Flatten the gathered tensors
-                # Shape will be (world_size, batch_size, condition_dim) -> (world_size * batch_size, condition_dim)
-                gen_conditions_all = gen_conditions_gathered.view(
-                    -1, gen_conditions_gathered.shape[-1]
-                )
-                conditions_all = conditions_gathered.view(
-                    -1, conditions_gathered.shape[-1]
-                )
-            else:
-                # Single GPU case
-                gen_conditions_all = gen_conditions_tensor.cpu()
-                conditions_all = conditions_tensor.cpu()
+            try:
+                gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)[correct_segment]
+                conditions_tensor = conditions.to(self.device)[correct_segment]
+            except:
+                gen_conditions_tensor = torch.zeros_like(conditions).to('cpu')
+                conditions_tensor = conditons.to('cpu')
 
             # Calculate the MSE loss between estimated and true volume fractions
             # This calculation happens on all GPUs but with the same gathered data
-            loss = self.mse(gen_conditions_all.flatten(), conditions_all.flatten())
+            loss = self.mse(gen_conditions_tensor.flatten(), conditions_tensor.flatten())
 
             # Log the results (sync_dist=True will handle averaging across GPUs)
             self.log(
@@ -295,15 +280,6 @@ class Diffusion(LightningModule):
                 logger=True,
                 sync_dist=True,
             )
-
-            if self.trainer.is_global_zero:
-                total_samples = gen_conditions_all.shape[0]
-                self.log(
-                    "generation_total_samples",
-                    float(total_samples),
-                    logger=True,
-                    sync_dist=False,
-                )
 
             # Restore original model if using EMA
             if self.ema and self.hparams.validate_with_ema:

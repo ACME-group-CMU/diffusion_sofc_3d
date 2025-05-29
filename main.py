@@ -22,7 +22,7 @@ from pytorch_lightning import (
 from lightning.pytorch.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
-
+from pytorch_lightning.utilities import rank_zero_only
 
 from diffusion import Diffusion
 from data import BuildDataset
@@ -128,20 +128,14 @@ def main(config):
     #     annealing_epochs=int(0.1 * config.training.n_epochs),
     # )
 
-    refresh_rate = 64
+    refresh_rate = 16
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
 
     logger = TensorBoardLogger(
         save_dir=config.logging.dir,
         name="lightning_logs",
-        version=f"version_{config.logging.version}",
     )
-
-    print(f"Saving config to {logger.log_dir}")
-    os.makedirs(logger.log_dir, exist_ok=True)
-    config_path = os.path.join(logger.log_dir, "config.yaml")
-    OmegaConf.save(config, config_path)
-
+    
     trainer = Trainer(
         logger=logger,
         default_root_dir=config.logging.dir,
@@ -163,7 +157,6 @@ def main(config):
     )
 
     trainer.fit(model, dm, ckpt_path=config.logging.ckpt)
-
 
 def get_next_version(save_dir):
     """
@@ -285,8 +278,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = OmegaConf.load(args.config)
-
-    version = get_next_version(config.logging.dir)
-    config.logging.version = version
 
     main(config)

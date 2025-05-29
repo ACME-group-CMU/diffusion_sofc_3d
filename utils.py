@@ -105,7 +105,7 @@ def threshold_sweep_inline(grads, b_thresh, t_thresh, n_thresh):
     inputs = [(grads, threshold) for threshold in thresholds]
     # Gets an array of the number of markers for each threshold
     num_markers = pqdm(
-        inputs, seg.gradient_threshold, n_jobs=4, disable=True
+        inputs, seg.gradient_threshold, n_jobs=mp.cpu_count(), disable=True
     )
 
     return thresholds, num_markers
@@ -205,7 +205,7 @@ def segment(array: np.array):
         try:
             grads = seg.sobel_gradients(subvol)
             # Run gradient threshold sweep
-            thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 1.0, 100)
+            thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 0.8,100)
 
             # Plot threshold swep results and find maximum marker threshold.
             max_marker_thresh = max_marker_grad_thresh(thresholds, num_markers)
