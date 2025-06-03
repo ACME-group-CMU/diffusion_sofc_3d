@@ -316,7 +316,7 @@ class Diffusion(LightningModule):
         else:
             w = -1
 
-        for i in tqdm(self.noise_scheduler.timesteps):
+        for i in tqdm(self.noise_scheduler.timesteps, miniters=100):
             i = i.item()
             timestep = x.new_full((x.shape[0],), i, dtype=torch.long)
 

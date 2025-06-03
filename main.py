@@ -155,9 +155,30 @@ def main(config):
         precision=config.training.precision,
         gradient_clip_val=config.training.clip_val,
     )
-
+    
+    save_config(config,logger.log_dir)
+    
     trainer.fit(model, dm, ckpt_path=config.logging.ckpt)
 
+@rank_zero_only
+def save_config(config, log_dir):
+    """
+    Save the configuration file to the logging directory.
+    This function will only run on rank 0 (main process) in distributed training.
+    
+    Args:
+        config: OmegaConf configuration object
+        log_dir: Directory where the config should be saved
+    """
+    # Ensure the log directory exists
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Save the config as YAML
+    config_save_path = os.path.join(log_dir, "training_config.yaml")
+    OmegaConf.save(config, config_save_path)
+    print(f"Configuration saved to: {config_save_path}")
+
+@rank_zero_only
 def get_next_version(save_dir):
     """
     Get the next version number by checking existing version directories.
