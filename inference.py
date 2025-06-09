@@ -368,7 +368,6 @@ def main():
         strict=False
     )
     model.eval()
-    
     # Validate conditions against model
     model_condition_dim = model.hparams.get('condition_dim', None)
     
@@ -392,6 +391,9 @@ def main():
         'img_size': args.img_size,
         'is_conditional': parsed_conditions is not None,
     }
+    
+    
+    model = torch.compile(model)
     
     # Calculate total GPUs and print info
     total_gpus = max(1, args.gpus * args.num_nodes)
