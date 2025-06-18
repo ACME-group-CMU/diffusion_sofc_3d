@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from copy import deepcopy
 import warnings
 
@@ -6,8 +7,9 @@ warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision("medium")
 
 
-class EMA:
+class EMA(nn.Module):
     def __init__(self, model, decay=0.995):
+        super().__init__()
         self.model = model
         self.decay = decay
         self.shadow = deepcopy(model)

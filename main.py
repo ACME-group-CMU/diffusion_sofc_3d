@@ -122,6 +122,15 @@ def main(config):
         filename="loss-{epoch:03d}-{loss:.6f}",
     )
 
+    checkpoint_callback = ModelCheckpoint(
+        save_top_k=-1,
+        monitor="step",
+        mode="max",
+        every_n_epochs=config.training.n_steps // 2,
+        save_last=True,
+        filename="loss-{epoch:03d}-{step:03d}-{loss:.6f}",
+    )
+
     # swa_callback = StochasticWeightAveraging(
     #     swa_lrs=0.0001 if config.model.train_base_model else 0.001,
     #     swa_epoch_start=0.6,
@@ -135,7 +144,7 @@ def main(config):
         save_dir=config.logging.dir,
         name="lightning_logs",
     )
-    
+
     trainer = Trainer(
         logger=logger,
         default_root_dir=config.logging.dir,
@@ -143,6 +152,7 @@ def main(config):
         devices=config.training.n_gpu,
         num_nodes=config.training.n_nodes,
         max_epochs=config.training.n_epochs,
+        max_steps =config.training.n_steps,
         strategy=strategy,
         deterministic=True,
         callbacks=[

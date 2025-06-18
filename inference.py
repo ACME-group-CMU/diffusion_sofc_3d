@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from pytorch_lightning import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.callbacks import BasePredictionWriter
-from diffusion import Diffusion
+from main import Diffusion
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -51,18 +51,11 @@ class DiffusionInference(Diffusion):
         if config['is_conditional'] and torch.any(condition_batch_tensor != 0):
             processed_conditions = condition_batch_tensor.cpu().numpy()
         
-        # Use EMA model if requested and available
-        active_model = self.unet
-        if config['use_ema'] and self.ema:
-            self.ema.apply_shadow()
-            active_model = self.ema.model
-        
         # Generate samples
         generated_samples = self.generate(
             inf_timesteps=config['inf_timesteps'],
             sample_shape=sample_shape,
             condition=processed_conditions,
-            model=active_model,
             w=config['w_guidance']
         )
         
@@ -208,44 +201,62 @@ class DistributedSampleWriter(BasePredictionWriter):
 
 
 def create_condition_dataloader(
-    conditions: Optional[Union[List[float], List[List[float]]]], 
-    num_samples: int, 
+    condition_file: Optional[str],
+    num_samples: int,
     condition_dim: Optional[int],
     batch_size_per_gpu: int,
     num_workers: int = 0
-) -> DataLoader:
+) -> tuple[DataLoader, int, Optional[np.ndarray]]:
     """
     Create a dataloader for conditions that distributes samples across GPUs.
     
     Args:
-        conditions: Either None, single condition vector, or list of condition vectors
-        num_samples: Total number of samples to generate
-        condition_dim: Dimension of each condition vector (None for unconditional)
+        condition_file: Path to .npy file with conditions of shape (N, C), or None for unconditional
+        num_samples: Number of samples to generate (used only if condition_file is None)
+        condition_dim: Expected condition dimension from model (None for unconditional models)
         batch_size_per_gpu: Samples per batch per GPU
         num_workers: Number of dataloader workers
+        
+    Returns:
+        tuple: (dataloader, actual_num_samples, conditions_array)
     """
-    if conditions is None or condition_dim is None:
-        # Unconditional: create placeholder tensors
-        condition_tensor = torch.zeros((num_samples, 1), dtype=torch.float32)
+    conditions_array = None
+    
+    if condition_file is not None:
+        # Load conditions from file
+        if not os.path.exists(condition_file):
+            raise FileNotFoundError(f"Condition file not found: {condition_file}")
+        
+        try:
+            conditions_array = np.load(condition_file)
+        except Exception as e:
+            raise ValueError(f"Failed to load condition file {condition_file}: {e}")
+        
+        # Validate shape
+        if conditions_array.ndim != 2:
+            raise ValueError(f"Condition file must contain 2D array (N, C), got shape {conditions_array.shape}")
+        
+        actual_num_samples, file_condition_dim = conditions_array.shape
+        
+        # Validate condition dimension against model
+        if condition_dim is not None and file_condition_dim != condition_dim:
+            raise ValueError(f"Condition dimension mismatch: model expects {condition_dim}D, "
+                           f"file contains {file_condition_dim}D conditions")
+        
+        condition_tensor = torch.tensor(conditions_array, dtype=torch.float32)
+        print(f"📁 Loaded {actual_num_samples} conditions from {condition_file}")
+        
     else:
-        # Check if multiple condition vectors or single vector
-        if isinstance(conditions[0], (list, tuple, np.ndarray)):
-            # Multiple conditions (one per sample)
-            if len(conditions) != num_samples:
-                raise ValueError(f"Expected {num_samples} condition vectors, got {len(conditions)}")
-            
-            for i, cond in enumerate(conditions):
-                if len(cond) != condition_dim:
-                    raise ValueError(f"Condition {i} has {len(cond)} values, expected {condition_dim}")
-            
-            condition_tensor = torch.tensor(conditions, dtype=torch.float32)
+        # Unconditional generation
+        actual_num_samples = num_samples
+        if condition_dim is not None:
+            # Model supports conditioning but we want unconditional - use zeros as placeholder
+            condition_tensor = torch.zeros((actual_num_samples, condition_dim), dtype=torch.float32)
         else:
-            # Single condition vector for all samples
-            if len(conditions) != condition_dim:
-                raise ValueError(f"Expected {condition_dim} condition values, got {len(conditions)}")
-            
-            condition_array = np.array(conditions, dtype=np.float32)
-            condition_tensor = torch.from_numpy(np.tile(condition_array, (num_samples, 1)))
+            # Pure unconditional model
+            condition_tensor = torch.zeros((actual_num_samples, 1), dtype=torch.float32)
+        
+        print(f"🎲 Generating {actual_num_samples} unconditional samples")
     
     dataset = TensorDataset(condition_tensor)
     dataloader = DataLoader(
@@ -257,16 +268,54 @@ def create_condition_dataloader(
         drop_last=False  # Process all samples
     )
     
-    return dataloader
+    return dataloader, actual_num_samples, conditions_array
+
+
+def find_checkpoint_by_version(version: str, checkpoint_type: str = "best_val") -> str:
+    """
+    Find checkpoint file by version number and type.
+    
+    Args:
+        version: Version number (e.g., "100162")
+        checkpoint_type: Type of checkpoint ("best_train", "best_val", "last")
+        
+    Returns:
+        Path to checkpoint file
+    """
+    base_dir = f"lightning_logs/version_{version}/checkpoints"
+    
+    if not os.path.exists(base_dir):
+        raise FileNotFoundError(f"Checkpoint directory not found: {base_dir}")
+    
+    if checkpoint_type == "best_train":
+        pattern = "best_loss-*.ckpt"
+    elif checkpoint_type == "best_val":
+        pattern = "best_val_loss-*.ckpt"
+    elif checkpoint_type == "last":
+        pattern = "last.ckpt"
+    else:
+        raise ValueError(f"Unknown checkpoint type: {checkpoint_type}")
+    
+    import glob
+    checkpoint_files = glob.glob(os.path.join(base_dir, pattern))
+    
+    if not checkpoint_files:
+        raise FileNotFoundError(f"No checkpoint files found matching {pattern} in {base_dir}")
+    
+    # Return the first match (or latest if multiple)
+    checkpoint_path = sorted(checkpoint_files)[-1]
+    print(f"📂 Using checkpoint: {checkpoint_path}")
+    
+    return checkpoint_path
 
 
 @rank_zero_only
-def print_generation_info(args, num_gpus: int, model_condition_dim: Optional[int]):
+def print_generation_info(args, num_gpus: int, model_condition_dim: Optional[int], actual_num_samples: int):
     """Print comprehensive generation setup information."""
     print("=" * 70)
     print("🚀 MULTI-GPU DIFFUSION INFERENCE SETUP")
     print("=" * 70)
-    print(f"📊 Total samples requested: {args.num_samples}")
+    print(f"📊 Total samples: {actual_num_samples}")
     print(f"🔧 Hardware configuration:")
     print(f"   • GPUs: {num_gpus}")
     print(f"   • Nodes: {args.num_nodes}")
@@ -279,10 +328,10 @@ def print_generation_info(args, num_gpus: int, model_condition_dim: Optional[int
     print(f"   • Guidance weight: {args.w}")
     print(f"   • Using EMA: {args.use_ema}")
     print(f"🎯 Conditioning:")
-    if args.condition:
+    if args.condition_file:
         print(f"   • Type: Conditional")
+        print(f"   • Condition file: {args.condition_file}")
         print(f"   • Condition dimension: {model_condition_dim}")
-        print(f"   • Condition values: {args.condition}")
     else:
         print(f"   • Type: Unconditional")
         if model_condition_dim:
@@ -294,23 +343,30 @@ def print_generation_info(args, num_gpus: int, model_condition_dim: Optional[int
 def main():
     parser = argparse.ArgumentParser(description="Multi-GPU Diffusion Model Inference with Lightning")
     
-    # Model and data arguments
-    parser.add_argument("--checkpoint_path", type=str, required=True,
-                       help="Path to model checkpoint")
+    # Model and checkpoint arguments
+    parser.add_argument("--version", type=str, required=True,
+                       help="Version number for checkpoint directory")
+    parser.add_argument("--checkpoint_type", type=str, default="best_val",
+                       choices=["best_train", "best_val", "last"],
+                       help="Type of checkpoint to use")
+    parser.add_argument("--checkpoint_path", type=str, default=None,
+                       help="Specific checkpoint path (overrides version/type)")
+    
+    # Output arguments
     parser.add_argument("--output_path", type=str, required=True,
                        help="Path to save generated samples (.npz file)")
+    
+    # Generation arguments
+    parser.add_argument("--condition_file", type=str, default=None,
+                       help="Path to .npy file with conditions of shape (N, C)")
     parser.add_argument("--num_samples", type=int, default=32,
-                       help="Total number of samples to generate")
+                       help="Number of samples (used only if condition_file is None)")
     parser.add_argument("--img_size", type=int, default=64,
                        help="Image size (cubic)")
     parser.add_argument("--channels", type=int, default=1,
                        help="Number of channels")
-    
-    # Generation arguments
     parser.add_argument("--inf_timesteps", type=int, default=None,
                        help="Number of inference timesteps (default: from model)")
-    parser.add_argument("--condition", type=str, default=None,
-                       help="Conditions: 'v1,v2,v3' (same for all) or 'v1,v2;v3,v4;...' (per sample)")
     parser.add_argument("--w", type=float, default=3.0,
                        help="Guidance weight for conditional generation")
     parser.add_argument("--use_ema", action="store_true",
@@ -335,51 +391,40 @@ def main():
         print("⚠️  Warning: GPUs requested but CUDA not available. Using CPU.")
         args.gpus = 0
     
-    # Parse conditions
-    parsed_conditions = None
-    parsed_condition_dim = None
-    
-    if args.condition:
-        if ';' in args.condition:
-            # Multiple conditions (one per sample)
-            condition_sets = [s.strip() for s in args.condition.split(';') if s.strip()]
-            parsed_conditions = []
-            for i, cond_set in enumerate(condition_sets):
-                cond_values = [float(x.strip()) for x in cond_set.split(',')]
-                if i == 0:
-                    parsed_condition_dim = len(cond_values)
-                elif len(cond_values) != parsed_condition_dim:
-                    raise ValueError(f"All condition sets must have same dimension")
-                parsed_conditions.append(cond_values)
-            
-            if len(parsed_conditions) != args.num_samples:
-                raise ValueError(f"Provided {len(parsed_conditions)} condition sets "
-                               f"but requested {args.num_samples} samples")
-        else:
-            # Single condition for all samples
-            parsed_conditions = [float(x.strip()) for x in args.condition.split(',')]
-            parsed_condition_dim = len(parsed_conditions)
+    # Determine checkpoint path
+    if args.checkpoint_path:
+        checkpoint_path = args.checkpoint_path
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+    else:
+        checkpoint_path = find_checkpoint_by_version(args.version, args.checkpoint_type)
     
     # Load model
-    print(f"📥 Loading model from: {args.checkpoint_path}")
+    print(f"📥 Loading model from: {checkpoint_path}")
     model = DiffusionInference.load_from_checkpoint(
-        args.checkpoint_path,
+        checkpoint_path,
         map_location='cpu',
         strict=False
     )
     model.eval()
-    # Validate conditions against model
+    
+    # Get model's condition dimension
     model_condition_dim = model.hparams.get('condition_dim', None)
     
-    if parsed_condition_dim is not None:
-        if model_condition_dim is None:
-            print("⚠️  Warning: Conditions provided but model is unconditional. Ignoring conditions.")
-            parsed_conditions = None
-            parsed_condition_dim = None
-            args.condition = None
-        elif parsed_condition_dim != model_condition_dim:
-            raise ValueError(f"Condition dimension mismatch: got {parsed_condition_dim}, "
-                           f"model expects {model_condition_dim}")
+    # Create condition dataloader and get actual sample count
+    dataloader, actual_num_samples, conditions_array = create_condition_dataloader(
+        condition_file=args.condition_file,
+        num_samples=args.num_samples,
+        condition_dim=model_condition_dim,
+        batch_size_per_gpu=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+    )
+    
+    # Validate conditional vs unconditional setup
+    is_conditional = args.condition_file is not None
+    if is_conditional and model_condition_dim is None:
+        print("⚠️  Warning: Conditions provided but model is unconditional. Generating unconditionally.")
+        is_conditional = False
     
     # Set inference configuration on model
     effective_inf_timesteps = args.inf_timesteps or model.hparams.get('inf_timesteps', 50)
@@ -389,36 +434,27 @@ def main():
         'use_ema': args.use_ema,
         'channels': args.channels,
         'img_size': args.img_size,
-        'is_conditional': parsed_conditions is not None,
+        'is_conditional': is_conditional,
     }
-    
-    
-    model = torch.compile(model)
     
     # Calculate total GPUs and print info
     total_gpus = max(1, args.gpus * args.num_nodes)
-    print_generation_info(args, total_gpus, model_condition_dim)
-    
-    # Create dataloader
-    dataloader = create_condition_dataloader(
-        conditions=parsed_conditions,
-        num_samples=args.num_samples,
-        condition_dim=parsed_condition_dim,
-        batch_size_per_gpu=args.batch_size_per_gpu,
-        num_workers=args.num_workers,
-    )
+    print_generation_info(args, total_gpus, model_condition_dim, actual_num_samples)
     
     # Prepare metadata
     metadata = {
-        'num_samples_requested': args.num_samples,
+        'num_samples_requested': actual_num_samples,
         'img_size': args.img_size,
         'channels': args.channels,
         'inf_timesteps': effective_inf_timesteps,
         'w_guidance': args.w,
         'use_ema': args.use_ema,
-        'condition_dim': parsed_condition_dim,
-        'is_conditional': parsed_conditions is not None,
-        'checkpoint_path': os.path.basename(args.checkpoint_path),
+        'condition_dim': model_condition_dim,
+        'is_conditional': is_conditional,
+        'condition_file': args.condition_file,
+        'checkpoint_path': os.path.basename(checkpoint_path),
+        'version': args.version,
+        'checkpoint_type': args.checkpoint_type,
         'total_gpus': total_gpus,
     }
     
