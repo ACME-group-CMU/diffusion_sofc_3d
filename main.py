@@ -113,31 +113,29 @@ def main(config):
         filename="best_val_loss-{epoch:03d}-{val_loss:.6f}",
     )
 
-    checkpoint_callback = ModelCheckpoint(
+    checkpoint_callback_1 = ModelCheckpoint(
         save_top_k=-1,
         monitor="epoch",
         mode="max",
-        every_n_epochs=config.training.n_epochs // 2,
+        every_n_epochs=config.training.n_epochs // config.training.n_epoch_ckpts,
         save_last=True,
         filename="loss-{epoch:03d}-{loss:.6f}",
     )
 
-    checkpoint_callback = ModelCheckpoint(
+    checkpoint_callback_2 = ModelCheckpoint(
         save_top_k=-1,
         monitor="step",
         mode="max",
-        every_n_epochs=config.training.n_steps // 2,
-        save_last=True,
+        every_n_train_steps=config.training.n_steps // config.training.n_batch_ckpts,
         filename="loss-{epoch:03d}-{step:03d}-{loss:.6f}",
     )
-
     # swa_callback = StochasticWeightAveraging(
     #     swa_lrs=0.0001 if config.model.train_base_model else 0.001,
     #     swa_epoch_start=0.6,
     #     annealing_epochs=int(0.1 * config.training.n_epochs),
-    # )
+    # )s
 
-    refresh_rate = 16
+    refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
 
     logger = TensorBoardLogger(
@@ -157,7 +155,8 @@ def main(config):
         deterministic=True,
         callbacks=[
             tqdm_callback,
-            checkpoint_callback,
+            checkpoint_callback_1,
+            checkpoint_callback_2,
             best_callback,
             best_val_callback,
             # swa_callback,

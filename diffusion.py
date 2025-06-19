@@ -174,14 +174,26 @@ class Diffusion(LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         # EMA shadow model context
-        if self.ema and self.hparams.validate_with_ema:
+        if self.ema:
             self.ema.apply_shadow()
-            model = self.ema.model
-        else:
-            model = self.unet.eval()
+            model = self.ema.model.eval()
 
-        loss = self.shared_step(batch, model)
+            loss_ema = self.shared_step(batch, model)
 
+            self.log(
+                "val_loss_ema",
+                loss_ema,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                sync_dist=True,
+            )
+
+            self.ema.restore()
+            
+        loss = self.shared_step(batch, self.unet)
+        
         self.log(
             "val_loss",
             loss,
@@ -190,12 +202,7 @@ class Diffusion(LightningModule):
             prog_bar=True,
             logger=True,
             sync_dist=True,
-        )
-
-        if self.ema and self.hparams.validate_with_ema:
-            self.ema.restore()
-
-        return loss
+            )
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
