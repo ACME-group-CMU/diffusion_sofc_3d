@@ -335,6 +335,10 @@ class Diffusion(LightningModule):
             x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
 
         x = x.cpu().numpy().squeeze()
+        
+        if self.ema and self.hparams.validate_with_ema:
+            self.ema.restore()
+        
         return x
 
     def load_unconditional_weights(self, checkpoint_path):

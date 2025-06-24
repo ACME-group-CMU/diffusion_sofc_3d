@@ -51,6 +51,9 @@ class DiffusionInference(Diffusion):
         if config['is_conditional'] and torch.any(condition_batch_tensor != 0):
             processed_conditions = condition_batch_tensor.cpu().numpy()
         
+        if not config['use_ema']:
+            self.hparams.validate_with_ema = False
+        
         # Generate samples
         generated_samples = self.generate(
             inf_timesteps=config['inf_timesteps'],
@@ -437,6 +440,8 @@ def main():
         'img_size': args.img_size,
         'is_conditional': is_conditional,
     }
+    
+    model = torch.compile(model)
     
     # Calculate total GPUs and print info
     total_gpus = max(1, args.gpus * args.num_nodes)
