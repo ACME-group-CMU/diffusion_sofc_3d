@@ -174,26 +174,14 @@ class Diffusion(LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         # EMA shadow model context
-        if self.ema:
+        if self.ema and self.hparams.validate_with_ema:
             self.ema.apply_shadow()
-            model = self.ema.model.eval()
+            model = self.ema.model
+        else:
+            model = self.unet.eval()
 
-            loss_ema = self.shared_step(batch, model)
+        loss = self.shared_step(batch, model)
 
-            self.log(
-                "val_loss_ema",
-                loss_ema,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                logger=True,
-                sync_dist=True,
-            )
-
-            self.ema.restore()
-            
-        loss = self.shared_step(batch, self.unet)
-        
         self.log(
             "val_loss",
             loss,
@@ -202,7 +190,12 @@ class Diffusion(LightningModule):
             prog_bar=True,
             logger=True,
             sync_dist=True,
-            )
+        )
+
+        if self.ema and self.hparams.validate_with_ema:
+            self.ema.restore()
+
+        return loss
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
@@ -302,7 +295,14 @@ class Diffusion(LightningModule):
         w=3,
     ):
         if model is None:
-            model = self.unet
+            # EMA shadow model context
+            if self.ema and self.hparams.validate_with_ema:
+                print("Using EMA model")
+                self.ema.apply_shadow()
+                model = self.ema.model.eval()
+            else:
+                print("Using standard Unet")
+                model = self.unet.eval()
 
         if inf_timesteps is not None:
             self.noise_scheduler.set_timesteps(inf_timesteps)

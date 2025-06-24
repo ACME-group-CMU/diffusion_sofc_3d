@@ -165,6 +165,7 @@ class DistributedSampleWriter(BasePredictionWriter):
             final_conditions = final_conditions[:requested_samples]
         
         final_samples = final_samples.squeeze()
+        final_samples = (((final_samples+1)/2)*255).astype(np.uint8)
         # Prepare final save data
         save_data = {
             'samples': final_samples,
