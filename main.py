@@ -77,6 +77,7 @@ def main(config):
         config.model.beta_start,
         config.model.beta_end,
         config.model.var_schedule,
+        config.model.timestep_weighting,  # Add this line
         config.model.dropout,
         config.model.cond_dim,
         config.model.cross_attn,

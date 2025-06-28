@@ -43,6 +43,7 @@ class Diffusion(LightningModule):
         beta_start=0.0001,
         beta_end=0.1,
         var_sched="linear",
+        timestep_weighting= None,  # Add this parameter
         dropout=0,
         condition_dim=None,
         cross_attn=False,
@@ -86,6 +87,13 @@ class Diffusion(LightningModule):
                 beta_end=beta_end,
                 timestep_spacing="linspace",
             )
+
+        self.SNR = (self.noise_scheduler.alphas_cumprod / (1 - self.noise_scheduler.alphas_cumprod))
+
+        if timestep_weighting is not None:
+            self.min_SNR = torch.min( timestep_weighting / self.SNR , torch.tensor([1.0])).to(self.SNR.device)
+        else:
+            self.min_SNR = torch.ones_like(self.SNR)
 
         self.mse = nn.MSELoss()
         self.lr = lr
@@ -150,8 +158,15 @@ class Diffusion(LightningModule):
         # predict noise
         noise_pred = model(noisy_imgs, timesteps, condition)
 
-        # calculate loss
-        loss = self.mse(noise_pred.flatten(), noise.flatten())
+        # calculate per-sample loss with SNR weighting
+        loss = F.mse_loss(noise_pred, noise, reduction='none')  # Shape: (bs, channels, h, w, d)
+        loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
+        
+        # Apply min_SNR weighting per sample
+        weights = self.min_SNR[timesteps].to(loss.device)
+        loss = loss * weights
+        
+        loss = loss.mean()
 
         return loss
 
