@@ -151,7 +151,7 @@ def main(config):
         devices=config.training.n_gpu,
         num_nodes=config.training.n_nodes,
         max_epochs=config.training.n_epochs,
-        max_steps =config.training.n_steps,
+        max_steps=config.training.n_steps,
         strategy=strategy,
         deterministic=True,
         callbacks=[
@@ -165,52 +165,54 @@ def main(config):
         precision=config.training.precision,
         gradient_clip_val=config.training.clip_val,
     )
-    
-    save_config(config,logger.log_dir)
-    
+
+    save_config(config, logger.log_dir)
+
     trainer.fit(model, dm, ckpt_path=config.logging.ckpt)
+
 
 @rank_zero_only
 def save_config(config, log_dir):
     """
     Save the configuration file to the logging directory.
     This function will only run on rank 0 (main process) in distributed training.
-    
+
     Args:
         config: OmegaConf configuration object
         log_dir: Directory where the config should be saved
     """
     # Ensure the log directory exists
     os.makedirs(log_dir, exist_ok=True)
-    
+
     # Save the config as YAML
     config_save_path = os.path.join(log_dir, "training_config.yaml")
     OmegaConf.save(config, config_save_path)
     print(f"Configuration saved to: {config_save_path}")
 
+
 @rank_zero_only
 def get_next_version(save_dir):
     """
     Get the next version number by checking existing version directories.
-    
+
     Args:
         save_dir (str): Base directory where lightning_logs will be created
-        
+
     Returns:
         int: Next version number
     """
     lightning_logs_dir = os.path.join(save_dir, "lightning_logs")
-    
+
     if not os.path.exists(lightning_logs_dir):
         os.makedirs(lightning_logs_dir, exist_ok=True)
         return 0
-    
+
     # Find existing version directories
     version_dirs = glob.glob(os.path.join(lightning_logs_dir, "version_*"))
-    
+
     if not version_dirs:
         return 0
-    
+
     # Extract version numbers and find the maximum
     version_numbers = []
     for version_dir in version_dirs:
@@ -221,7 +223,7 @@ def get_next_version(save_dir):
                 version_numbers.append(version_num)
             except (ValueError, IndexError):
                 continue
-    
+
     return max(version_numbers) + 1 if version_numbers else 0
 
 

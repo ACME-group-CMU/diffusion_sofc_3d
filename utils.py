@@ -87,7 +87,7 @@ def get_vf_array(array):
 
     A = map(get_vfs, array)
     A = list(A)
-    
+
     return np.array(A)
 
 
@@ -190,7 +190,6 @@ def analyze_post_watershed_dist(avg_grey, size):
 
 
 def segment(array: np.array):
-
     """
     Array should be of the shape (N,H,W,D)
     """
@@ -205,7 +204,7 @@ def segment(array: np.array):
         try:
             grads = seg.sobel_gradients(subvol)
             # Run gradient threshold sweep
-            thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 0.8,100)
+            thresholds, num_markers = threshold_sweep_inline(grads, 0.0, 0.8, 100)
 
             # Plot threshold swep results and find maximum marker threshold.
             max_marker_thresh = max_marker_grad_thresh(thresholds, num_markers)
@@ -223,13 +222,12 @@ def segment(array: np.array):
             ), "avg_img and subvol should be the same shape"
             # Phase-ID image
             seg_img = seg.threshold_volume(avg_img, bg_thresh, gw_thresh)
-            assert len(np.unique(seg_img)) == 3, 'Segmentation should yield 3 phases'
+            assert len(np.unique(seg_img)) == 3, "Segmentation should yield 3 phases"
         except Exception as e:
-            seg_img = np.random.randint(1,3, subvol.shape, dtype=np.uint8)
+            seg_img = np.random.randint(1, 3, subvol.shape, dtype=np.uint8)
             seg_correct[num] = 0
 
         seg_vols.append(seg_img)
-        
 
     seg_vols = np.array(seg_vols)
     return seg_vols, seg_correct

@@ -43,7 +43,7 @@ class Diffusion(LightningModule):
         beta_start=0.0001,
         beta_end=0.1,
         var_sched="linear",
-        timestep_weighting= None,  # Add this parameter
+        timestep_weighting=None,  # Add this parameter
         dropout=0,
         condition_dim=None,
         cross_attn=False,
@@ -88,10 +88,14 @@ class Diffusion(LightningModule):
                 timestep_spacing="linspace",
             )
 
-        self.SNR = (self.noise_scheduler.alphas_cumprod / (1 - self.noise_scheduler.alphas_cumprod))
+        self.SNR = self.noise_scheduler.alphas_cumprod / (
+            1 - self.noise_scheduler.alphas_cumprod
+        )
 
         if timestep_weighting is not None:
-            self.min_SNR = torch.min( timestep_weighting / self.SNR , torch.tensor([1.0])).to(self.SNR.device)
+            self.min_SNR = torch.min(
+                timestep_weighting / self.SNR, torch.tensor([1.0])
+            ).to(self.SNR.device)
         else:
             self.min_SNR = torch.ones_like(self.SNR)
 
@@ -159,13 +163,15 @@ class Diffusion(LightningModule):
         noise_pred = model(noisy_imgs, timesteps, condition)
 
         # calculate per-sample loss with SNR weighting
-        loss = F.mse_loss(noise_pred, noise, reduction='none')  # Shape: (bs, channels, h, w, d)
+        loss = F.mse_loss(
+            noise_pred, noise, reduction="none"
+        )  # Shape: (bs, channels, h, w, d)
         loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
-        
+
         # Apply min_SNR weighting per sample
         weights = self.min_SNR[timesteps].to(loss.device)
         loss = loss * weights
-        
+
         loss = loss.mean()
 
         return loss
@@ -248,7 +254,6 @@ class Diffusion(LightningModule):
 
             sample_shape = imgs.shape
 
-
             # Generate samples using the diffusion model
             # Each GPU generates its own batch
             generated_images = self.generate(
@@ -262,29 +267,34 @@ class Diffusion(LightningModule):
             # Estimate volume fractions from the generated images
             # Each GPU processes its own batch
             gen_vols = generated_images.clone().cpu().detach().numpy()
-            
-            if gen_vols.ndim !=4:
+
+            if gen_vols.ndim != 4:
                 if gen_vols.ndim > 4:
                     gen_vols = gen_vols.squeeze()
-                elif gen_vols.ndim ==3:
-                    gen_vols = gen_vols[None,...]
+                elif gen_vols.ndim == 3:
+                    gen_vols = gen_vols[None, ...]
                 else:
                     raise ValueError(
-                        f"Generated volumes should be 4D (N,H, W, D), got less {gen_vols.ndim} dimensions.")
-            
+                        f"Generated volumes should be 4D (N,H, W, D), got less {gen_vols.ndim} dimensions."
+                    )
+
             gen_conditions_local, correct_segment = self.condition_fn(gen_vols)
 
             # Convert to tensors for distributed operations
             try:
-                gen_conditions_tensor = torch.tensor(gen_conditions_local).to(self.device)[correct_segment]
+                gen_conditions_tensor = torch.tensor(gen_conditions_local).to(
+                    self.device
+                )[correct_segment]
                 conditions_tensor = conditions.to(self.device)[correct_segment]
             except:
-                gen_conditions_tensor = torch.zeros_like(conditions).to('cpu')
-                conditions_tensor = conditons.to('cpu')
+                gen_conditions_tensor = torch.zeros_like(conditions).to("cpu")
+                conditions_tensor = conditions.to("cpu")
 
             # Calculate the MSE loss between estimated and true volume fractions
             # This calculation happens on all GPUs but with the same gathered data
-            loss = self.mse(gen_conditions_tensor.flatten(), conditions_tensor.flatten())
+            loss = self.mse(
+                gen_conditions_tensor.flatten(), conditions_tensor.flatten()
+            )
 
             # Log the results (sync_dist=True will handle averaging across GPUs)
             self.log(
@@ -350,10 +360,10 @@ class Diffusion(LightningModule):
             x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
 
         x = x.cpu().numpy().squeeze()
-        
+
         if self.ema and self.hparams.validate_with_ema:
             self.ema.restore()
-        
+
         return x
 
     def load_unconditional_weights(self, checkpoint_path):
