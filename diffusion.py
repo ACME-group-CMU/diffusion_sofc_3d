@@ -124,8 +124,8 @@ class Diffusion(LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "frequency": 5,
-                "interval": "epoch",
+                "frequency": 1,
+                "interval": "step",
             },
         }
 
@@ -169,6 +169,12 @@ class Diffusion(LightningModule):
         loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
 
         # Apply min_SNR weighting per sample
+        
+        try:
+            assert self.min_SNR.device == self.timesteps.device
+        except:
+            self.min_SNR = self.min_SNR.to(timesteps.device)
+        
         weights = self.min_SNR[timesteps].to(loss.device)
         loss = loss * weights
 
@@ -221,6 +227,9 @@ class Diffusion(LightningModule):
     def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
             self.ema.update()
+        
+        if (self.global_step>=20050) and (self.global_step<20055):
+            self.trainer.save_checkpoint(f"{self.logger.log_dir}/checkpoints/step_{self.global_step}.ckpt")
 
     @torch.no_grad()
     def on_train_epoch_end(self):
