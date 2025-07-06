@@ -36,7 +36,9 @@ class Diffusion(LightningModule):
         dif_timesteps: int = 1000,
         inf_timesteps: int = 50,
         sample_amt: int = 36,
-        scheduler_gamma: float = 0.8,
+        scheduler_gamma: float = 0.95,
+        scheduler_style: str = 'epoch',
+        scheduler_freq: int = 1,
         n_blocks: int = 1,
         ch_mul: tuple = (1, 2, 2, 4),
         is_attn: tuple = (0, 0, 1, 1),
@@ -119,13 +121,20 @@ class Diffusion(LightningModule):
     def configure_optimizers(self):
         optimizer = AdamW(self.unet.parameters(), lr=self.lr)
         scheduler = ExponentialLR(optimizer, gamma=self.hparams.scheduler_gamma)
-
+        
+        # Get scheduler configuration from hyperparameters
+        scheduler_style = self.hparams.get('scheduler_style', 'epoch')
+        scheduler_gamma = self.hparams.get('scheduler_gamma', 0.95)
+        scheduler_freq = self.hparams.get('scheduler_freq', 10)
+        
+        scheduler = ExponentialLR(optimizer, gamma=scheduler_gamma)
+        
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "frequency": 1,
-                "interval": "step",
+                "frequency": scheduler_freq,
+                "interval": scheduler_style,
             },
         }
 
@@ -357,7 +366,7 @@ class Diffusion(LightningModule):
         else:
             w = -1
 
-        for i in tqdm(self.noise_scheduler.timesteps, miniters=100):
+        for i in tqdm(self.noise_scheduler.timesteps, miniters=100, mininterval = 40):
             i = i.item()
             timestep = x.new_full((x.shape[0],), i, dtype=torch.long)
 

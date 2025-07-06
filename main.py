@@ -71,6 +71,8 @@ def main(config):
         config.model.inf_timesteps,
         config.model.sample_size,
         config.training.scheduler_gamma,
+        config.training.scheduler_style,
+        config.training.scheduler_freq,
         config.model.n_blocks,
         config.model.ch_mul,
         config.model.is_attn,
@@ -309,7 +311,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--config", type=str, help="Path to the configuration file.")
     args = parser.parse_args()
-
+    
+    print(args.config)
     config = OmegaConf.load(args.config)
 
     main(config)
