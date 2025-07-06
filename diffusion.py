@@ -37,7 +37,7 @@ class Diffusion(LightningModule):
         inf_timesteps: int = 50,
         sample_amt: int = 36,
         scheduler_gamma: float = 0.95,
-        scheduler_style: str = 'epoch',
+        scheduler_style: str = "epoch",
         scheduler_freq: int = 1,
         n_blocks: int = 1,
         ch_mul: tuple = (1, 2, 2, 4),
@@ -121,14 +121,14 @@ class Diffusion(LightningModule):
     def configure_optimizers(self):
         optimizer = AdamW(self.unet.parameters(), lr=self.lr)
         scheduler = ExponentialLR(optimizer, gamma=self.hparams.scheduler_gamma)
-        
+
         # Get scheduler configuration from hyperparameters
-        scheduler_style = self.hparams.get('scheduler_style', 'epoch')
-        scheduler_gamma = self.hparams.get('scheduler_gamma', 0.95)
-        scheduler_freq = self.hparams.get('scheduler_freq', 10)
-        
+        scheduler_style = self.hparams.get("scheduler_style", "epoch")
+        scheduler_gamma = self.hparams.get("scheduler_gamma", 0.95)
+        scheduler_freq = self.hparams.get("scheduler_freq", 10)
+
         scheduler = ExponentialLR(optimizer, gamma=scheduler_gamma)
-        
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -178,12 +178,12 @@ class Diffusion(LightningModule):
         loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
 
         # Apply min_SNR weighting per sample
-        
+
         try:
             assert self.min_SNR.device == self.timesteps.device
         except:
             self.min_SNR = self.min_SNR.to(timesteps.device)
-        
+
         weights = self.min_SNR[timesteps].to(loss.device)
         loss = loss * weights
 
@@ -236,9 +236,11 @@ class Diffusion(LightningModule):
     def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
             self.ema.update()
-        
-        if (self.global_step>=20050) and (self.global_step<20055):
-            self.trainer.save_checkpoint(f"{self.logger.log_dir}/checkpoints/step_{self.global_step}.ckpt")
+
+        if (self.global_step >= 20050) and (self.global_step < 20055):
+            self.trainer.save_checkpoint(
+                f"{self.logger.log_dir}/checkpoints/step_{self.global_step}.ckpt"
+            )
 
     @torch.no_grad()
     def on_train_epoch_end(self):
@@ -366,7 +368,7 @@ class Diffusion(LightningModule):
         else:
             w = -1
 
-        for i in tqdm(self.noise_scheduler.timesteps, miniters=100, mininterval = 40):
+        for i in tqdm(self.noise_scheduler.timesteps, miniters=100, mininterval=40):
             i = i.item()
             timestep = x.new_full((x.shape[0],), i, dtype=torch.long)
 

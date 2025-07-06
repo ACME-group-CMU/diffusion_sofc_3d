@@ -23,8 +23,10 @@ class EMA(nn.Module):
     def update(self):
 
         self.params = [p.data for p in self.model.parameters() if p.requires_grad]
-        self.shadow_params = [p.data for p in self.shadow.parameters() if p.requires_grad]
-        
+        self.shadow_params = [
+            p.data for p in self.shadow.parameters() if p.requires_grad
+        ]
+
         decay = self.decay
         for param, shadow_param in zip(self.params, self.shadow_params):
             shadow_param.copy_(shadow_param * decay + (1 - decay) * param)
@@ -32,8 +34,10 @@ class EMA(nn.Module):
     def apply_shadow(self):
         # Refresh parameter references to handle checkpoint loading
         self.params = [p.data for p in self.model.parameters() if p.requires_grad]
-        self.shadow_params = [p.data for p in self.shadow.parameters() if p.requires_grad]
-        
+        self.shadow_params = [
+            p.data for p in self.shadow.parameters() if p.requires_grad
+        ]
+
         # Original apply_shadow logic
         self.backup = [p.clone() for p in self.params]
         for param, shadow_param in zip(self.params, self.shadow_params):

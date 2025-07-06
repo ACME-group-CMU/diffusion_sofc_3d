@@ -311,7 +311,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--config", type=str, help="Path to the configuration file.")
     args = parser.parse_args()
-    
+
     print(args.config)
     config = OmegaConf.load(args.config)
 
