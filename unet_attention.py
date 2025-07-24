@@ -286,10 +286,7 @@ class MiddleBlock(nn.Module):
     """
 
     def __init__(
-        self,
-        n_channels: int,
-        time_channels: int,
-        middle_attn=False,
+        self, n_channels: int, time_channels: int, middle_attn=False,
     ):
         super().__init__()
         self.res1 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0)

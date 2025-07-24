@@ -38,11 +38,7 @@ def vf_otsu(microstructures):
 
     areas = torch.split(
         hist,
-        (
-            thresholds[0],
-            thresholds[1] - thresholds[0],
-            hist.numel() - thresholds[1],
-        ),
+        (thresholds[0], thresholds[1] - thresholds[0], hist.numel() - thresholds[1],),
     )
 
     for i in range(3):

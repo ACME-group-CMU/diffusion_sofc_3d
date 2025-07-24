@@ -380,10 +380,12 @@ class Diffusion(LightningModule):
                 if condition is not None:
                     residual_noise_cond = model(x, timestep, condition)
                     residual_noise = model(x, timestep, None)
-                    residual_noise = ((1 + w) * residual_noise_cond) - (w * residual_noise)
+                    residual_noise = ((1 + w) * residual_noise_cond) - (
+                        w * residual_noise
+                    )
                 else:
                     residual_noise = model(x, timestep, None)
-            
+
             residual_noise = residual_noise.type_as(x)
             x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
 

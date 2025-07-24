@@ -15,6 +15,7 @@ import warnings
 warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision("medium")
 
+
 class DiffusionInference(Diffusion):
     """
     Inference-specific Diffusion model that inherits all functionality
@@ -36,12 +37,12 @@ class DiffusionInference(Diffusion):
             )
 
         config = self.inference_config
-        
+
         # Use existing get_input method to parse batch format
         noise, condition = self.get_input(batch)
-        
+
         batch_size = noise.shape[0]  # Get batch size from noise tensor
-        
+
         # Create sample shape for this batch
         sample_shape = (
             batch_size,
@@ -50,20 +51,20 @@ class DiffusionInference(Diffusion):
             config["img_size"],
             config["img_size"],
         )
-        
+
         # Process conditions: convert placeholder zeros to None for unconditional
         processed_conditions = None
         if config["is_conditional"] and condition is not None:
             # Check if conditions are actual values or placeholder zeros
             if torch.any(condition != 0):
                 processed_conditions = condition.cpu().numpy()
-        
+
         # Prepare noise for generation (always a tensor now)
         predetermined_noise = noise.to(self.device)
-        
+
         if not config["use_ema"]:
             self.hparams.validate_with_ema = False
-        
+
         # Generate samples
         generated_samples = self.generate(
             inf_timesteps=config["inf_timesteps"],
@@ -72,17 +73,18 @@ class DiffusionInference(Diffusion):
             w=config["w_guidance"],
             noise=predetermined_noise,  # Pass predetermined noise
         )
-        
+
         # Ensure proper shape (add channel dim if squeezed)
         if config["channels"] == 1 and generated_samples.ndim == 4:
             generated_samples = generated_samples[:, np.newaxis, ...]
-        
+
         return {
             "samples": generated_samples,
             "conditions": processed_conditions,
             "batch_idx": batch_idx,
             "gpu_rank": self.global_rank if hasattr(self, "global_rank") else 0,
         }
+
 
 class DistributedSampleWriter(BasePredictionWriter):
     """
@@ -226,6 +228,7 @@ class DistributedSampleWriter(BasePredictionWriter):
         except Exception as e:
             print(f"⚠️  Warning: Could not cleanup temp files: {e}")
 
+
 class InferenceDataset(Dataset):
     """
     Dataset class for diffusion model inference that handles conditions and predetermined noise.
@@ -236,7 +239,7 @@ class InferenceDataset(Dataset):
     - Flexible sample count determination
     - GPU-friendly distribution via DataLoader
     """
-    
+
     def __init__(
         self,
         condition_file: Optional[str] = None,
@@ -263,95 +266,114 @@ class InferenceDataset(Dataset):
         self.noise_file = noise_file
         self.img_size = img_size
         self.channels = channels
-        
+
         # Initialize data containers
         self.conditions = None
         self.noise = None
         self.dataset_size = 0
-        
+
         # Load and validate data
         self._load_conditions()
         self._load_noise()
         self._validate_compatibility()
-    
+
     def _load_conditions(self):
         """Load conditions from file or create placeholders."""
         if self.condition_file is not None:
             # Load conditions from file
             if not os.path.exists(self.condition_file):
-                raise FileNotFoundError(f"Condition file not found: {self.condition_file}")
-            
+                raise FileNotFoundError(
+                    f"Condition file not found: {self.condition_file}"
+                )
+
             try:
                 conditions_array = np.load(self.condition_file)
             except Exception as e:
-                raise ValueError(f"Failed to load condition file {self.condition_file}: {e}")
-            
+                raise ValueError(
+                    f"Failed to load condition file {self.condition_file}: {e}"
+                )
+
             # Validate shape
             if conditions_array.ndim != 2:
                 raise ValueError(
                     f"Condition file must contain 2D array (N, C), got shape {conditions_array.shape}"
                 )
-            
+
             self.dataset_size, file_condition_dim = conditions_array.shape
-            
+
             # Validate condition dimension against model
-            if self.condition_dim is not None and file_condition_dim != self.condition_dim:
+            if (
+                self.condition_dim is not None
+                and file_condition_dim != self.condition_dim
+            ):
                 raise ValueError(
                     f"Condition dimension mismatch: model expects {self.condition_dim}D, "
                     f"file contains {file_condition_dim}D conditions"
                 )
-            
+
             self.conditions = torch.tensor(conditions_array, dtype=torch.float32)
             print(f"📁 Loaded {self.dataset_size} conditions from {self.condition_file}")
-            
+
         else:
             # Unconditional generation or model supports conditioning but we want unconditional
             if self.num_samples is None:
-                raise ValueError("num_samples must be provided when condition_file is None")
-            
+                raise ValueError(
+                    "num_samples must be provided when condition_file is None"
+                )
+
             self.dataset_size = self.num_samples
-            
+
             if self.condition_dim is not None:
                 # Model supports conditioning but we want unconditional - use zeros as placeholder
-                self.conditions = torch.zeros((self.dataset_size, self.condition_dim), dtype=torch.float32)
-                print(f"🎲 Created {self.dataset_size} placeholder conditions for conditional model (unconditional generation)")
+                self.conditions = torch.zeros(
+                    (self.dataset_size, self.condition_dim), dtype=torch.float32
+                )
+                print(
+                    f"🎲 Created {self.dataset_size} placeholder conditions for conditional model (unconditional generation)"
+                )
             else:
                 # Pure unconditional model - no conditions needed
                 self.conditions = None
                 print(f"🎲 Generating {self.dataset_size} unconditional samples")
-    
+
     def _load_noise(self):
         """Load predetermined noise from file or flag for random generation."""
         if self.noise_file is not None:
             if not os.path.exists(self.noise_file):
                 raise FileNotFoundError(f"Noise file not found: {self.noise_file}")
-            
+
             try:
                 noise_array = np.load(self.noise_file)
             except Exception as e:
                 raise ValueError(f"Failed to load noise file {self.noise_file}: {e}")
-            
+
             # Validate noise shape
-            expected_shape = (self.dataset_size, self.channels, self.img_size, self.img_size, self.img_size)
+            expected_shape = (
+                self.dataset_size,
+                self.channels,
+                self.img_size,
+                self.img_size,
+                self.img_size,
+            )
             if noise_array.shape != expected_shape:
                 raise ValueError(
                     f"Noise shape mismatch: expected {expected_shape}, got {noise_array.shape}"
                 )
-            
+
             self.noise = torch.tensor(noise_array, dtype=torch.float32)
             print(f"🎯 Loaded predetermined noise from {self.noise_file}")
             print(f"   Noise shape: {self.noise.shape}")
-            
+
         else:
             # Will generate random noise per sample
             self.noise = None
             print(f"🎲 Will generate random noise per sample")
-    
+
     def _validate_compatibility(self):
         """Validate that all loaded data is compatible."""
         if self.dataset_size == 0:
             raise ValueError("Dataset size cannot be zero")
-        
+
         # If both conditions and noise are loaded, ensure they have the same sample count
         if self.conditions is not None and self.noise is not None:
             if self.conditions.shape[0] != self.noise.shape[0]:
@@ -359,54 +381,55 @@ class InferenceDataset(Dataset):
                     f"Sample count mismatch: conditions have {self.conditions.shape[0]} samples, "
                     f"noise has {self.noise.shape[0]} samples"
                 )
-        
+
         print(f"✅ Dataset validation passed: {self.dataset_size} samples ready")
-    
+
     def __len__(self) -> int:
         """Return the dataset size."""
         return self.dataset_size
-    
+
     def __getitem__(self, idx: int):
         # Get predetermined noise or generate random noise
         if self.noise is not None:
             noise = self.noise[idx]
         else:
             # Generate random noise for this sample
-            noise = torch.randn(self.channels, self.img_size, self.img_size, self.img_size)
-        
+            noise = torch.randn(
+                self.channels, self.img_size, self.img_size, self.img_size
+            )
+
         # Get condition
         condition = None
         if self.conditions is not None:
             condition = self.conditions[idx]
-        
+
         # Return format: (noise, condition) if conditions exist, else just noise
         if condition is not None:
             return (noise, condition)
         else:
             return noise
 
-    
     def get_info(self) -> Dict[str, Any]:
         """Get dataset information for logging/debugging."""
         info = {
-            'dataset_size': self.dataset_size,
-            'condition_file': self.condition_file,
-            'noise_file': self.noise_file,
-            'condition_dim': self.condition_dim,
-            'img_size': self.img_size,
-            'channels': self.channels,
-            'has_conditions': self.conditions is not None,
-            'has_predetermined_noise': self.noise is not None,
+            "dataset_size": self.dataset_size,
+            "condition_file": self.condition_file,
+            "noise_file": self.noise_file,
+            "condition_dim": self.condition_dim,
+            "img_size": self.img_size,
+            "channels": self.channels,
+            "has_conditions": self.conditions is not None,
+            "has_predetermined_noise": self.noise is not None,
         }
-        
+
         if self.conditions is not None:
-            info['condition_shape'] = tuple(self.conditions.shape)
-            info['condition_dtype'] = str(self.conditions.dtype)
-        
+            info["condition_shape"] = tuple(self.conditions.shape)
+            info["condition_dtype"] = str(self.conditions.dtype)
+
         if self.noise is not None:
-            info['noise_shape'] = tuple(self.noise.shape)
-            info['noise_dtype'] = str(self.noise.dtype)
-        
+            info["noise_shape"] = tuple(self.noise.shape)
+            info["noise_dtype"] = str(self.noise.dtype)
+
         return info
 
 
@@ -444,7 +467,7 @@ def create_inference_dataloader(
         img_size=img_size,
         channels=channels,
     )
-    
+
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size_per_gpu,
@@ -453,13 +476,14 @@ def create_inference_dataloader(
         pin_memory=True if num_workers > 0 else False,
         drop_last=False,  # Process all samples
     )
-    
+
     # For backward compatibility, extract conditions array
     conditions_array = None
     if dataset.conditions is not None:
         conditions_array = dataset.conditions.cpu().numpy()
-    
+
     return dataloader, len(dataset), conditions_array
+
 
 def find_checkpoint_by_version(version: str, checkpoint_type: str = "best_val") -> str:
     """

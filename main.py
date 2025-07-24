@@ -141,10 +141,7 @@ def main(config):
     refresh_rate = 64
     tqdm_callback = TQDMProgressBar(refresh_rate=refresh_rate)
 
-    logger = TensorBoardLogger(
-        save_dir=config.logging.dir,
-        name="lightning_logs",
-    )
+    logger = TensorBoardLogger(save_dir=config.logging.dir, name="lightning_logs",)
 
     trainer = Trainer(
         logger=logger,
