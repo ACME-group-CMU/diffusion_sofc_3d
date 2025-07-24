@@ -337,6 +337,7 @@ class Diffusion(LightningModule):
         sample_shape=(10, 1, 96, 96, 96),
         condition=None,
         model=None,
+        noise=None,
         w=3,
     ):
         if model is None:
@@ -360,23 +361,30 @@ class Diffusion(LightningModule):
                 condition.shape[0] == sample_shape[0]
             ), "number of conditions not matching the number of samples"
 
-        x = torch.randn(sample_shape).to(next(model.parameters()).device)
+        if noise is None:
+            x = torch.randn(sample_shape).to(next(model.parameters()).device)
+        else:
+            x = torch.tensor(noise).to(next(model.parameters()).device)
 
         if condition is not None:
             condition = torch.tensor(condition).type_as(x)
             w = w
         else:
-            w = -1
+            w = None
 
         for i in tqdm(self.noise_scheduler.timesteps, miniters=100, mininterval=40):
             i = i.item()
             timestep = x.new_full((x.shape[0],), i, dtype=torch.long)
 
             with torch.cuda.amp.autocast():
-                residual_noise_cond = model(x, timestep, condition)
-                residual_noise = model(x, timestep, None)
-
-            residual_noise = ((1 + w) * residual_noise_cond) - (w * residual_noise)
+                if condition is not None:
+                    residual_noise_cond = model(x, timestep, condition)
+                    residual_noise = model(x, timestep, None)
+                    residual_noise = ((1 + w) * residual_noise_cond) - (w * residual_noise)
+                else:
+                    residual_noise = model(x, timestep, None)
+            
+            residual_noise = residual_noise.type_as(x)
             x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
 
         x = x.cpu().numpy().squeeze()
