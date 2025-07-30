@@ -10,6 +10,7 @@ from torch.optim.lr_scheduler import ExponentialLR
 
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
+from pytorch_lightning.utilities import grad_norm
 
 from unet_attention import UNet
 from diffusers import DDPMScheduler
@@ -232,6 +233,12 @@ class Diffusion(LightningModule):
             self.ema.restore()
 
         return loss
+
+    def on_before_optimizer_step(self, optimizer):
+        # Compute the 2-norm for each layer
+        # If using mixed precision, the gradients are already unscaled here
+        norms = grad_norm(self.layer, norm_type=2)
+        self.log_dict(norms, logger=True, sync_dist=True)
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.ema:
