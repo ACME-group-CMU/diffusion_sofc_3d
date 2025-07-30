@@ -246,7 +246,7 @@ class InferenceDataset(Dataset):
         num_samples: Optional[int] = None,
         condition_dim: Optional[int] = None,
         noise_file: Optional[str] = None,
-        img_size: int = 64,
+        img_size: int = 96,
         channels: int = 1,
     ):
         """
@@ -438,7 +438,7 @@ def create_inference_dataloader(
     num_samples: Optional[int] = None,
     condition_dim: Optional[int] = None,
     noise_file: Optional[str] = None,
-    img_size: int = 64,
+    img_size: int = 96,
     channels: int = 1,
     batch_size_per_gpu: int = 4,
     num_workers: int = 0,
@@ -601,12 +601,18 @@ def main():
         help="Path to .npy file with conditions of shape (N, C)",
     )
     parser.add_argument(
+        "--noise_file",
+        type=str,
+        default=None,
+        help="Path to .npy file with pre-determined noise",
+    )
+    parser.add_argument(
         "--num_samples",
         type=int,
         default=32,
         help="Number of samples (used only if condition_file is None)",
     )
-    parser.add_argument("--img_size", type=int, default=64, help="Image size (cubic)")
+    parser.add_argument("--img_size", type=int, default=96, help="Image size (cubic)")
     parser.add_argument("--channels", type=int, default=1, help="Number of channels")
     parser.add_argument(
         "--inf_timesteps",
@@ -638,7 +644,7 @@ def main():
     parser.add_argument(
         "--batch_size_per_gpu",
         type=int,
-        default=4,
+        default=12,
         help="Number of samples per batch per GPU",
     )
 
@@ -678,6 +684,9 @@ def main():
         condition_dim=model_condition_dim,
         batch_size_per_gpu=args.batch_size_per_gpu,
         num_workers=args.num_workers,
+        noise_file = args.noise_file,
+        img_size = args.img_size,
+        channels = args.channels,
     )
 
     # Validate conditional vs unconditional setup

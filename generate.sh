@@ -1,20 +1,19 @@
 #!/bin/bash
-#SBATCH --partition=acmegroup
+#SBATCH --partition=gpu
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1
-#SBATCH --ntasks-per-node=1 
+#SBATCH --ntasks-per-node=8 
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=128G
-#SBATCH --time=1-00:00:00
+#SBATCH --mem=1T
+#SBATCH --time=2-00:00:00
 #SBATCH --output ./Outputs/%j.out
 #SBATCH --error ./Outputs/%j.err
 #SBATCH --mail-user=rbajpai@andrew.cmu.edu
 #SBATCH --mail-type=ALL
 
-module load aocc/4.0.0 cuda/12.8
-module load anaconda3
-source activate torch2
+module load aocc/4.1.0 cuda/12.4
+module load anaconda/3
+source activate rbenv
 
-cd ~/test/conditional_diffusion/
+cd ~/conditional_diffusion/diffusion_sofc_3d
 
-python3 generate_multi.py "$@"
+srun python3 generate_multi.py "$@"
