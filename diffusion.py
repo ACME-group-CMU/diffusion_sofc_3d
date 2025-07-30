@@ -239,16 +239,12 @@ class Diffusion(LightningModule):
         # If using mixed precision, the gradients are already unscaled here
         norms = grad_norm(self.layer, norm_type=2)
         self.log_dict(norms, logger=True, sync_dist=True)
-
-    def on_train_batch_end(self, *args, **kwargs):
+        
+    def optimizer_step(self, *args, **kwargs):
+        super().optimizer_step(*args, **kwargs)
         if self.ema:
             self.ema.update()
-
-        if (self.global_step >= 20050) and (self.global_step < 20055):
-            self.trainer.save_checkpoint(
-                f"{self.logger.log_dir}/checkpoints/step_{self.global_step}.ckpt"
-            )
-
+        
     @torch.no_grad()
     def on_train_epoch_end(self):
         # Check if we should perform conditional validation this epoch
