@@ -20,7 +20,6 @@ from utils import *
 import warnings
 
 warnings.filterwarnings("ignore")
-torch.set_float32_matmul_precision("medium")
 from ema import EMA
 
 
@@ -235,16 +234,30 @@ class Diffusion(LightningModule):
         return loss
 
     def on_before_optimizer_step(self, optimizer):
-        # Compute the 2-norm for each layer
+        # Compute the 2-norm before clipping
         # If using mixed precision, the gradients are already unscaled here
-        norms = grad_norm(self.layer, norm_type=2)
-        self.log_dict(norms, logger=True, sync_dist=True)
+        norms = grad_norm(self.unet, norm_type=2)
+        norms_pre_clip_prefixed = {f"grad_norm_pre_clip/{k}": v for k, v in norms.items()}
+        self.log_dict(norms_pre_clip_prefixed, logger=True)
         
     def optimizer_step(self, *args, **kwargs):
         super().optimizer_step(*args, **kwargs)
         if self.ema:
-            self.ema.update()
+           self.ema.update()
+           
+    def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        self.clip_gradients(optimizer, gradient_clip_val=gradient_clip_val, gradient_clip_algorithm=gradient_clip_algorithm)
+        norms = grad_norm(self.unet, norm_type=2)
+        norms_post_clip_prefixed = {f"grad_norm_post_clip/{k}": v for k, v in norms.items()}
+        self.log_dict(norms_post_clip_prefixed, logger=True)
         
+    def on_train_batch_end(self, *args, **kwargs):
+
+        if (self.global_step >= 20050) and (self.global_step < 20055):
+            self.trainer.save_checkpoint(
+                f"{self.logger.log_dir}/checkpoints/step_{self.global_step}.ckpt"
+            )
+
     @torch.no_grad()
     def on_train_epoch_end(self):
         # Check if we should perform conditional validation this epoch

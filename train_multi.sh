@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Base directory for configs
-CONFIG_DIR="~/conditional_diffusion/configs"
+CONFIG_DIR="~/conditional_diffusion/configs/random_seed100_clip"
 
 # Array of config numbers
-CONFIGS=({16..21})
+CONFIGS=({2..2})
 
 # Submit each job
 for config_num in "${CONFIGS[@]}"; do

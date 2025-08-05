@@ -4,8 +4,6 @@ from copy import deepcopy
 import warnings
 
 warnings.filterwarnings("ignore")
-torch.set_float32_matmul_precision("medium")
-
 
 class EMA(nn.Module):
     def __init__(self, model, decay=0.995):

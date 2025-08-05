@@ -13,8 +13,6 @@ from diffusion import Diffusion
 import warnings
 
 warnings.filterwarnings("ignore")
-torch.set_float32_matmul_precision("medium")
-
 
 class DiffusionInference(Diffusion):
     """

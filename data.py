@@ -12,7 +12,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-
 ## Create Dataset class
 class Microstructures(Dataset):
     def __init__(
@@ -189,24 +188,30 @@ class BuildDataset(Dataset):
     def apply_symmetry_transformations(self, subimage: torch.Tensor) -> torch.Tensor:
         """
         Apply symmetry transformations to the subimage.
-
         Args:
             subimage (torch.Tensor): Subimage tensor.
-
         Returns:
             torch.Tensor: Transformed subimage tensor.
         """
-        subimage = torch.rot90(subimage, k=np.random.randint(4), dims=(1, 2))
-        subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 1))
-        subimage = torch.rot90(subimage, k=np.random.choice([0, 2]), dims=(0, 2))
-
-        if np.random.choice([True, False]):
+        # Random rotation (0, 1, 2, or 3 times 90 degrees)
+        k_rot = torch.randint(0, 4, (1,)).item()
+        subimage = torch.rot90(subimage, k=k_rot, dims=(1, 2))
+        
+        # Random rotation around other axes (0 or 2 times 90 degrees)
+        k_rot_01 = torch.tensor([0, 2])[torch.randint(0, 2, (1,)).item()]
+        subimage = torch.rot90(subimage, k=k_rot_01, dims=(0, 1))
+        
+        k_rot_02 = torch.tensor([0, 2])[torch.randint(0, 2, (1,)).item()]
+        subimage = torch.rot90(subimage, k=k_rot_02, dims=(0, 2))
+        
+        # Random flips along each dimension
+        if torch.rand(1).item() > 0.5:
             subimage = torch.flip(subimage, dims=[0])
-        if np.random.choice([True, False]):
+        if torch.rand(1).item() > 0.5:
             subimage = torch.flip(subimage, dims=[1])
-        if np.random.choice([True, False]):
+        if torch.rand(1).item() > 0.5:
             subimage = torch.flip(subimage, dims=[2])
-
+        
         return subimage
 
     def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, torch.Tensor]:

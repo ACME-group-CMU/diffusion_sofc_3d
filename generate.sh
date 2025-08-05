@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=8 
+#SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=1T
 #SBATCH --time=2-00:00:00

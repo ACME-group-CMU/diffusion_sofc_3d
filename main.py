@@ -163,6 +163,7 @@ def main(config):
         ],
         precision=config.training.precision,
         gradient_clip_val=config.training.clip_val,
+        accumulate_grad_batches = config.training.grad_accumulate,
     )
 
     save_config(config, logger.log_dir)
