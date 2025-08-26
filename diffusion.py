@@ -152,7 +152,7 @@ class Diffusion(LightningModule):
 
         return imgs, condition
 
-    def shared_step(self, batch, model):
+    def shared_step(self, batch, model,log_timestep=False):
 
         imgs, condition = self.get_input(batch)
         bs = imgs.shape[0]
@@ -170,7 +170,14 @@ class Diffusion(LightningModule):
 
         # predict noise
         noise_pred = model(noisy_imgs, timesteps, condition)
-
+        
+        # Log timestep bin losses (unweighted raw MSE)
+        if log_timestep: 
+            self.log_timestep_loss(
+                noise_pred, noise, timesteps, 
+                num_bins=4,  # or make this a hyperparameter
+            )
+        
         # calculate per-sample loss with SNR weighting
         loss = F.mse_loss(
             noise_pred, noise, reduction="none"
@@ -178,7 +185,6 @@ class Diffusion(LightningModule):
         loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
 
         # Apply min_SNR weighting per sample
-
         try:
             assert self.min_SNR.device == self.timesteps.device
         except:
@@ -190,10 +196,64 @@ class Diffusion(LightningModule):
         loss = loss.mean()
 
         return loss
+    
+    @torch.no_grad()
+    @torch._dynamo.disable
+    def log_timestep_loss(self, pred, noise, timesteps, num_bins=4, **log_kwargs):
+        """
+        Log loss for each timestep bin.
+        
+        Args:
+            pred: Model predictions, shape (B, C, H, W, D)
+            noise: Ground truth noise, shape (B, C, H, W, D)  
+            timesteps: Timesteps for each sample, shape (B,)
+            num_bins: Number of timestep bins to create
+            **log_kwargs: Additional arguments for self.log()
+        """
+        # Compute raw MSE loss
+        loss = (pred - noise) ** 2  # Shape: (B, C, H, W, D)
+
+        # Reduce to per-sample loss
+        batch_size = loss.shape[0]
+        loss_per_sample = loss.view(batch_size, -1).mean(dim=1)  # Shape: (B,)
+        
+        # Define timestep bin boundaries
+        max_timesteps = self.hparams.dif_timesteps
+        bin_boundaries = torch.linspace(0, max_timesteps, num_bins + 1, device=timesteps.device)
+        
+        # Assign each timestep to a bin
+        # timestep_bins will have shape (B,) with values 0, 1, 2, ..., num_bins-1
+        timestep_bins = torch.bucketize(timesteps.float(), bin_boundaries[1:], right=False)
+        
+        # Log loss for each bin that has samples
+        for bin_idx in range(num_bins):
+            # Create mask for samples in this bin
+            bin_mask = (timestep_bins == bin_idx)
+            
+            # Skip if no samples in this bin
+            if not bin_mask.any():
+                continue
+                
+            # Compute mean loss for this bin
+            bin_loss = loss_per_sample[bin_mask].mean()
+            
+            # Determine bin range for logging
+            bin_start = int(bin_boundaries[bin_idx].item())
+            bin_end = int(bin_boundaries[bin_idx + 1].item())
+            
+            # Log the bin loss
+            self.log(
+                f"timestep_loss_bin_{bin_idx}_{bin_start}_{bin_end}",
+                bin_loss,
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+                sync_dist=True,
+            )
 
     def training_step(self, batch, batch_idx):
 
-        loss = self.shared_step(batch, self.unet)
+        loss = self.shared_step(batch, self.unet,log_timestep=True)
 
         self.log(
             "loss",
@@ -212,15 +272,15 @@ class Diffusion(LightningModule):
         # EMA shadow model context
         if self.ema and self.hparams.validate_with_ema:
             self.ema.apply_shadow()
-            model = self.ema.model
+            model = self.ema.model.eval()
         else:
             model = self.unet.eval()
 
-        loss = self.shared_step(batch, model)
+        val_loss = self.shared_step(batch, model,log_timestep=False)
 
         self.log(
             "val_loss",
-            loss,
+            val_loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -231,25 +291,64 @@ class Diffusion(LightningModule):
         if self.ema and self.hparams.validate_with_ema:
             self.ema.restore()
 
-        return loss
+        return val_loss
+
+    def get_unscaled_grad_norms(self, model):
+        """Compute gradient norms on unscaled gradients"""
+        # Access Lightning's gradient scaler
+        if hasattr(self.trainer.precision_plugin, 'scaler') and self.trainer.precision_plugin.scaler is not None:
+            scaler = self.trainer.precision_plugin.scaler
+            
+            # Get current scale
+            current_scale = scaler.get_scale()
+            
+            # Compute scaled gradient norms first
+            scaled_norms = grad_norm(model, norm_type=2)
+            
+            # Unscale the norms (divide by scale factor)
+            unscaled_norms = {k: v / current_scale for k, v in scaled_norms.items()}
+            
+            return unscaled_norms, scaled_norms, current_scale
+        else:
+            # No scaling (FP32 mode)
+            norms = grad_norm(model, norm_type=2)
+            return norms, norms, 1.0
 
     def on_before_optimizer_step(self, optimizer):
-        # Compute the 2-norm before clipping
-        # If using mixed precision, the gradients are already unscaled here
-        norms = grad_norm(self.unet, norm_type=2)
-        norms_pre_clip_prefixed = {f"grad_norm_pre_clip/{k}": v for k, v in norms.items()}
-        self.log_dict(norms_pre_clip_prefixed, logger=True)
+        
+        norms = grad_norm(self.unet.eval(),norm_type=2)
+        norms_pre_clip = {f"grad_norm_pre_clip/{k}": v for k, v in norms.items()}
+        self.log_dict(norms_pre_clip, logger=True)
         
     def optimizer_step(self, *args, **kwargs):
         super().optimizer_step(*args, **kwargs)
         if self.ema:
-           self.ema.update()
+            # Save current training state
+            was_training = self.unet.training
+            
+            # Set model to eval mode for consistent EMA update
+            self.unet.eval()
+            
+            # Update EMA with dropout disabled
+            self.ema.update()
+            
+            # Restore original training state
+            self.unet.train(was_training)
            
     def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        if hasattr(self.trainer.precision_plugin, 'scaler') and self.trainer.precision_plugin.scaler is not None:
+            scaler = self.trainer.precision_plugin.scaler
+            
+            # Get current scale
+            current_scale = scaler.get_scale()
+        else:
+            current_scale = 1.0
+            
         self.clip_gradients(optimizer, gradient_clip_val=gradient_clip_val, gradient_clip_algorithm=gradient_clip_algorithm)
-        norms = grad_norm(self.unet, norm_type=2)
-        norms_post_clip_prefixed = {f"grad_norm_post_clip/{k}": v for k, v in norms.items()}
-        self.log_dict(norms_post_clip_prefixed, logger=True)
+        norms = grad_norm(self.unet.eval(),norm_type=2)
+        norms_post_clip = {f"grad_norm_post_clip/{k}": v for k, v in norms.items()}
+        self.log_dict(norms_post_clip, logger=True)
+        
         
     def on_train_batch_end(self, *args, **kwargs):
 

@@ -36,10 +36,6 @@ def main(config):
     """
     Main function to set up and start the training process.
     """
-    if config.training.n_epochs < 5 * config.model.sample_interval:
-        config.model.sample_interval = config.training.n_epochs // 6
-    else:
-        pass
 
     if (
         config.training.n_gpu * config.training.n_nodes > 1
@@ -120,7 +116,7 @@ def main(config):
         save_top_k=-1,
         monitor="epoch",
         mode="max",
-        every_n_epochs=config.training.n_epochs // config.training.n_epoch_ckpts,
+        every_n_epochs=50,
         save_last=True,
         filename="loss-{epoch:03d}-{loss:.6f}",
     )

@@ -663,7 +663,7 @@ def main():
     else:
         checkpoint_path = find_checkpoint_by_version(args.version, args.checkpoint_type)
 
-    seed_everything(42)  # Set a fixed seed for reproducibility
+    seed_everything(42,workers=True)  # Set a fixed seed for reproducibility
 
     # Load model
     print(f"📥 Loading model from: {checkpoint_path}")
