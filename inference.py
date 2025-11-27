@@ -38,6 +38,27 @@ class DiffusionInference(Diffusion):
 
         # Use existing get_input method to parse batch format
         noise, condition = self.get_input(batch)
+        
+        if hasattr(self, 'global_rank'):
+            rank = self.global_rank
+        else:
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            
+        if batch_idx==0:
+            seed_everything(42+rank)
+        
+        
+        print(f"=== PREDICT STEP DEBUG ===")
+        print(f"GPU Rank: {rank}, Batch idx: {batch_idx}")
+        print(f"PyTorch RNG state: {torch.get_rng_state()[0].clone().cpu().detach().numpy()}")
+        
+        # Check the batch content
+        #noise, condition = self.get_input(batch)
+        print(f"Batch noise shape: {noise.shape}")
+        print(f"First noise value: {noise[0, 0, 0, 0, 0].clone().cpu().detach().numpy()}")
+        if condition is not None:
+            print(f"Condition shape: {condition.shape}")
+        print(f"=========================")
 
         batch_size = noise.shape[0]  # Get batch size from noise tensor
 
@@ -395,7 +416,6 @@ class InferenceDataset(Dataset):
             noise = torch.randn(
                 self.channels, self.img_size, self.img_size, self.img_size
             )
-
         # Get condition
         condition = None
         if self.conditions is not None:
@@ -663,7 +683,7 @@ def main():
     else:
         checkpoint_path = find_checkpoint_by_version(args.version, args.checkpoint_type)
 
-    seed_everything(42,workers=True)  # Set a fixed seed for reproducibility
+    seed_everything(42, workers=True)  # Set a fixed seed for reproducibility
 
     # Load model
     print(f"📥 Loading model from: {checkpoint_path}")

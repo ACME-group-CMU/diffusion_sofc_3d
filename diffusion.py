@@ -363,7 +363,7 @@ class Diffusion(LightningModule):
         if (self.condition_dim is not None) and (
             (self.current_epoch + 1) % self.hparams.conditional_validation_frequency
             == 0
-        ):
+        ) and (self.condition_fn is not None):
 
             # EMA shadow model context
             if self.ema and self.hparams.validate_with_ema:
@@ -511,47 +511,119 @@ class Diffusion(LightningModule):
 
         return x
 
-    def load_unconditional_weights(self, checkpoint_path):
-        state_dict = torch.load(checkpoint_path)["state_dict"]
-
-        # Remove 'unet.' prefix from keys
+    def load_unconditional_weights(self, checkpoint_path, use_ema=True):
+        """
+        Load pretrained weights from an unconditional model checkpoint.
+        
+        Args:
+            checkpoint_path (str): Path to the checkpoint file
+            use_ema (bool): If True, load EMA shadow weights (recommended). 
+                           If False, load regular training weights.
+        """
+        checkpoint = torch.load(checkpoint_path)
+        state_dict = checkpoint["state_dict"]
+        
+        # Determine which weights to load
         unet_state_dict = {}
-        for k, v in state_dict.items():
-            unet_state_dict[k.replace("unet.", "")] = v
-
-        self.unet.load_state_dict(unet_state_dict, strict=False)
-
+        
+        if use_ema:
+            # Try to extract EMA shadow weights
+            ema_keys = [k for k in state_dict.keys() if k.startswith('ema.shadow.')]
+            
+            if ema_keys:
+                print(f"✓ Loading EMA shadow weights from {checkpoint_path}")
+                for k, v in state_dict.items():
+                    if k.startswith('ema.shadow.'):
+                        # Strip 'ema.shadow.' prefix
+                        new_key = k.replace('ema.shadow.', '')
+                        unet_state_dict[new_key] = v
+            else:
+                # Fallback to regular weights if EMA not available
+                print(f"⚠ Warning: EMA shadow weights not found in checkpoint.")
+                print(f"  Falling back to regular training weights.")
+                for k, v in state_dict.items():
+                    if k.startswith('unet.'):
+                        unet_state_dict[k.replace('unet.', '')] = v
+        else:
+            # Explicitly load regular training weights
+            print(f"Loading regular training weights from {checkpoint_path}")
+            for k, v in state_dict.items():
+                if k.startswith('unet.'):
+                    unet_state_dict[k.replace('unet.', '')] = v
+        
+        # Verify we got weights
+        if not unet_state_dict:
+            raise ValueError(
+                f"No compatible weights found in checkpoint {checkpoint_path}. "
+                f"Expected keys starting with 'ema.shadow.' or 'unet.'"
+            )
+        
+        # Load weights into the model
+        missing_keys, unexpected_keys = self.unet.load_state_dict(unet_state_dict, strict=False)
+        
+        # Print loading summary
+        print(f"✓ Loaded {len(unet_state_dict)} parameter tensors")
+        if missing_keys:
+            print(f"  Missing keys (expected for conditional layers): {len(missing_keys)}")
+            if len(missing_keys) <= 10:
+                for key in missing_keys:
+                    print(f"    - {key}")
+        if unexpected_keys:
+            print(f"  ⚠ Unexpected keys: {len(unexpected_keys)}")
+            for key in unexpected_keys[:5]:  # Show first 5
+                print(f"    - {key}")
+        
         # Freeze the base model parameters
         if not self.train_base_model:
             for param in self.unet.parameters():
                 param.requires_grad = False
-
+            print("✓ Froze all base model parameters")
+        
         # Unfreeze the conditional layers if they exist
         trainable_params_found = False
-
+        trainable_param_count = 0
+        
         if hasattr(self.unet, "condition_emb") and self.unet.condition_emb is not None:
             for param in self.unet.condition_emb.parameters():
                 param.requires_grad = True
                 trainable_params_found = True
-
+                trainable_param_count += param.numel()
+            print("✓ Unfroze condition_emb parameters")
+        
         if hasattr(self.unet, "cross_attn") and self.unet.cross_attn is not None:
             for param in self.unet.cross_attn.parameters():
                 param.requires_grad = True
                 trainable_params_found = True
-
+                trainable_param_count += param.numel()
+            print("✓ Unfroze cross_attn parameters")
+        
         if hasattr(self.unet, "time_concat") and self.unet.time_concat is not None:
             for param in self.unet.time_concat.parameters():
                 param.requires_grad = True
                 trainable_params_found = True
-
+                trainable_param_count += param.numel()
+            print("✓ Unfroze time_concat parameters")
+        
         # Ensure we have at least some trainable parameters
         if not trainable_params_found:
             print(
-                "Warning: No conditional layers found. Making all parameters trainable."
+                "⚠ Warning: No conditional layers found. Making all parameters trainable."
             )
             for param in self.unet.parameters():
                 param.requires_grad = True
-
+                trainable_param_count += param.numel()
+        
+        # Print trainable parameter summary
+        total_params = sum(p.numel() for p in self.unet.parameters())
+        frozen_params = total_params - trainable_param_count
+        print(f"\n📊 Parameter Summary:")
+        print(f"   Total parameters: {total_params:,}")
+        print(f"   Trainable parameters: {trainable_param_count:,} ({100*trainable_param_count/total_params:.2f}%)")
+        print(f"   Frozen parameters: {frozen_params:,} ({100*frozen_params/total_params:.2f}%)")
+        
         # Reinitialize EMA if it was previously set
-        self.ema = EMA(self.unet, decay=self.hparams.ema_decay)
+        if self.hparams.use_ema:
+            self.ema = EMA(self.unet, decay=self.hparams.ema_decay)
+            print(f"✓ Initialized new EMA with decay={self.hparams.ema_decay}")
+        
         self.configure_optimizers()

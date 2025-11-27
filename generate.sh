@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=8 
+#SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=1T
+#SBATCH --mem=128G
 #SBATCH --time=2-00:00:00
 #SBATCH --output ./Outputs/%j.out
 #SBATCH --error ./Outputs/%j.err
@@ -26,11 +26,11 @@ USE_EMA=${USE_EMA:-${5:-"true"}}
 # Optional parameters via environment variables (unchanged)
 CONDITION_FILE=${CONDITION_FILE:-""}
 NOISE_FILE=${NOISE_FILE:-""}
-OUTPUT_DIR=${OUTPUT_DIR:-"./generated_samples/Clip_Accumulate_TimeWeight/version_${VERSION}_${NUM_SAMPLES}samples_ema_${USE_EMA}/"}
+OUTPUT_DIR=${OUTPUT_DIR:-"./generated_samples/filtered_dataset/version_${VERSION}_${NUM_SAMPLES}samples_ema_${USE_EMA}/"}
 INF_TIMESTEPS=${INF_TIMESTEPS:-1000}
 W_GUIDANCE=${W_GUIDANCE:-0.0}
 GPUS=${GPUS:-8}
-NUM_WORKERS=${NUM_WORKERS:-4}
+NUM_WORKERS=${NUM_WORKERS:-8}
 
 # --- Validation ---
 if [ "$USE_EMA" != "true" ] && [ "$USE_EMA" != "false" ]; then
@@ -47,7 +47,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # --- Checkpoint Discovery ---
-BASE_DIR="./results/lightning_logs/version_${VERSION}/checkpoints"
+BASE_DIR="./results/lightning_logs/filtered_dataset_1000/version_${VERSION}/checkpoints"
 
 if [ ! -d "$BASE_DIR" ]; then
    echo "Error: Checkpoint directory not found: $BASE_DIR"
