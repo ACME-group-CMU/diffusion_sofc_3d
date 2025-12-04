@@ -64,7 +64,7 @@ class ConditionEmbedding(nn.Module):
             nn.SiLU(),
             nn.Linear(n_channels * 2, n_channels),
         )
-
+        
     def forward(self, c: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the ConditionEmbedding module.
@@ -391,7 +391,13 @@ class UNet(nn.Module):
                 if cross_attn is True
                 else None
             )
-            self.time_concat = nn.Linear(n_channels * 8, n_channels * 4)
+            
+            # 1. Define the layer
+            self.time_concat = nn.Linear(n_channels * 4, n_channels * 4)
+            with torch.no_grad():
+                # Start with everything at zero
+                self.time_concat.weight.zero_()
+                self.time_concat.bias.zero_()
 
         else:
             self.condition_emb = None
@@ -470,7 +476,7 @@ class UNet(nn.Module):
 
         if (self.condition_emb is not None) and (c is not None):
             c = self.condition_emb(c)
-            t = self.time_concat(torch.concat((t, c), dim=1))
+            t = t + self.time_concat(c)
             if (self.cross_attn is not None) and (c is not None):
                 x = self.cross_attn(x, c)
 

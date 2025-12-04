@@ -4,7 +4,7 @@
 CONFIG_DIR="~/conditional_diffusion/configs/filtered_dataset/conditional"
 
 # Array of config numbers
-CONFIGS=({0..0})
+CONFIGS=({2..3})
 
 # Submit each job
 for config_num in "${CONFIGS[@]}"; do

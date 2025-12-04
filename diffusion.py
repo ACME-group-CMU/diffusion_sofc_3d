@@ -360,8 +360,13 @@ class Diffusion(LightningModule):
     @torch.no_grad()
     def on_train_epoch_end(self):
         # Check if we should perform conditional validation this epoch
+        
+        grad_accumulate = self.trainer.accumulate_grad_batches
+        grad_accumulate = grad_accumulate if grad_accumulate is not None else 1
+        effective_freq = self.hparams.conditional_validation_frequency * grad_accumulate
+
         if (self.condition_dim is not None) and (
-            (self.current_epoch + 1) % self.hparams.conditional_validation_frequency
+            (self.current_epoch + 1) % effective_freq
             == 0
         ) and (self.condition_fn is not None):
 
@@ -388,7 +393,9 @@ class Diffusion(LightningModule):
                 return
 
             sample_shape = imgs.shape
-
+            
+            print(f"Sample Shape: {sample_shape}")
+            
             # Generate samples using the diffusion model
             # Each GPU generates its own batch
             generated_images = self.generate(
@@ -482,6 +489,7 @@ class Diffusion(LightningModule):
             x = torch.tensor(noise).to(next(model.parameters()).device)
 
         if condition is not None:
+            print(f"Condition is not None and w = {w}")
             condition = torch.tensor(condition).type_as(x)
             w = w
         else:

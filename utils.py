@@ -5,7 +5,7 @@ from pqdm.processes import pqdm
 from Segment.UpdatedAutomatedPWPID import segmentation_utils as seg
 from skimage.segmentation import watershed
 from scipy.signal import find_peaks, argrelmin
-
+import cc3d
 
 def vfs(array: np.array):
     """
@@ -180,6 +180,7 @@ def segment(array:np.array,thresh_min=None,thresh_max=None,n_thresh=50,thresh=0.
     Array should be of the shape (N,H,W,D)
     """
     seg_vols = []
+    seg_correct = np.ones(array.shape[0], dtype=bool)
     for i,subvol in enumerate(array):
         try:
             grads = seg.sobel_gradients(subvol)
@@ -220,5 +221,9 @@ def segment(array:np.array,thresh_min=None,thresh_max=None,n_thresh=50,thresh=0.
         except Exception as e:
             print(f"Error processing volume {i}: {e}")
             seg_vols.append(np.zeros_like(subvol))
+            seg_correct[i]=0
+            
     seg_vols = np.array(seg_vols)
-    return seg_vols
+
+    print("Correct Segment % \t",(np.sum(seg_correct)/array.shape[0]))
+    return seg_vols,seg_correct
