@@ -55,6 +55,9 @@ class Diffusion(LightningModule):
         ema_decay: float = 0.995,  # Add EMA decay rate
         validate_with_ema: bool = True,  # Add validation with EMA flag
         condition_fn: typing.Optional[str] = None,
+        condition_emb_type: str = "linear",
+        condition_injection: str = "add",
+        use_loss_weighting: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -69,6 +72,8 @@ class Diffusion(LightningModule):
             dropout=dropout,
             condition_dim=condition_dim,
             cross_attn=cross_attn,
+            condition_emb_type=condition_emb_type,
+            condition_injection=condition_injection,
         )
 
         self.ema = None  # Initialize EMA to None
@@ -139,54 +144,68 @@ class Diffusion(LightningModule):
         }
 
     def get_input(self, batch):
-
+        weight = None
+        
         if self.condition_dim is not None:
-            imgs, condition = batch
-            # Randomly set condition to None
+            # Check if the batch includes the custom weight
+            if len(batch) == 3:
+                imgs, condition, weight = batch
+            else:
+                imgs, condition = batch
+                
+            # Randomly drop condition if training base model
             if self.train_base_model:
                 if torch.rand(1) > 0.8:
                     condition = None
         else:
-            imgs = batch
+            # Unconditional pipeline
+            if isinstance(batch, (list, tuple)) and len(batch) == 2:
+                imgs, weight = batch
+            else:
+                imgs = batch
             condition = None
 
-        return imgs, condition
+        # Default to a weight of 1.0 if none is provided
+        if weight is None:
+            weight = torch.ones(imgs.shape[0], device=imgs.device)
+            
+        return imgs, condition, weight
 
-    def shared_step(self, batch, model,log_timestep=False):
-
-        imgs, condition = self.get_input(batch)
+    def shared_step(self, batch, model, log_timestep=False):
+        # Unpack the new 3-element tuple
+        imgs, condition, batch_weight = self.get_input(batch)
         bs = imgs.shape[0]
 
-        # sample noise
+        # sample noise and timesteps
         noise = torch.randn_like(imgs)
-
-        # sample a timestep for each image in the batch
-        timesteps = torch.randint(
-            0, self.hparams.dif_timesteps, (bs,), device=imgs.device
-        ).long()
-
-        # add noise to the images
+        timesteps = torch.randint(0, self.hparams.dif_timesteps, (bs,), device=imgs.device).long()
         noisy_imgs = self.noise_scheduler.add_noise(imgs, noise, timesteps)
-
+        
         # predict noise
         noise_pred = model(noisy_imgs, timesteps, condition)
         
-        # Log timestep bin losses (unweighted raw MSE)
         if log_timestep: 
-            self.log_timestep_loss(
-                noise_pred, noise, timesteps, 
-                num_bins=4,  # or make this a hyperparameter
-            )
+            self.log_timestep_loss(noise_pred, noise, timesteps, num_bins=4)
         
-        # calculate per-sample loss with SNR weighting
-        loss = F.mse_loss(
-            noise_pred, noise, reduction="none"
-        )  # Shape: (bs, channels, h, w, d)
-        loss = loss.view(bs, -1).mean(dim=1)  # Shape: (bs,)
+        # calculate per-sample loss
+        loss = F.mse_loss(noise_pred, noise, reduction="none")
+        loss = loss.view(bs, -1).mean(dim=1) 
+
+        # ---> NEW: Custom Batch Weighting <---
+        if self.hparams.get('use_loss_weighting', False) and condition is not None and not self.train_base_model:
+            batch_weight = batch_weight.to(loss.device)
+            
+            # Normalize weights across the batch so the overall batch learning rate doesn't effectively scale up/down
+            # (e.g., if you pass weights of [10, 10, 10], it normalizes them to [1, 1, 1] so gradients don't explode)
+            if batch_weight.mean() > 0:
+                batch_weight = batch_weight / batch_weight.mean() 
+                
+            loss = loss * batch_weight
+        # -------------------------------------
 
         # Apply min_SNR weighting per sample
         try:
-            assert self.min_SNR.device == self.timesteps.device
+            assert self.min_SNR.device == timesteps.device
         except:
             self.min_SNR = self.min_SNR.to(timesteps.device)
 
@@ -194,7 +213,6 @@ class Diffusion(LightningModule):
         loss = loss * weights
 
         loss = loss.mean()
-
         return loss
     
     @torch.no_grad()
@@ -584,41 +602,29 @@ class Diffusion(LightningModule):
                 print(f"    - {key}")
         
         # Freeze the base model parameters
+        # Freeze the base model parameters
         if not self.train_base_model:
             for param in self.unet.parameters():
                 param.requires_grad = False
             print("✓ Froze all base model parameters")
         
-        # Unfreeze the conditional layers if they exist
+        # ---> THE FIX: Dynamically unfreeze active components <---
         trainable_params_found = False
         trainable_param_count = 0
         
-        if hasattr(self.unet, "condition_emb") and self.unet.condition_emb is not None:
-            for param in self.unet.condition_emb.parameters():
+        # This recursively checks every single layer in the UNet
+        for name, param in self.unet.named_parameters():
+            if any(x in name for x in ["condition_emb", "cross_attn", "time_concat", "cond_adapter"]):
                 param.requires_grad = True
                 trainable_params_found = True
                 trainable_param_count += param.numel()
-            print("✓ Unfroze condition_emb parameters")
         
-        if hasattr(self.unet, "cross_attn") and self.unet.cross_attn is not None:
-            for param in self.unet.cross_attn.parameters():
-                param.requires_grad = True
-                trainable_params_found = True
-                trainable_param_count += param.numel()
-            print("✓ Unfroze cross_attn parameters")
-        
-        if hasattr(self.unet, "time_concat") and self.unet.time_concat is not None:
-            for param in self.unet.time_concat.parameters():
-                param.requires_grad = True
-                trainable_params_found = True
-                trainable_param_count += param.numel()
-            print("✓ Unfroze time_concat parameters")
-        
+        print(f"✓ Unfroze {trainable_param_count:,} conditional parameters")
+        # --------------------------------------------------------
+
         # Ensure we have at least some trainable parameters
         if not trainable_params_found:
-            print(
-                "⚠ Warning: No conditional layers found. Making all parameters trainable."
-            )
+            print("⚠ Warning: No conditional layers found. Making all parameters trainable.")
             for param in self.unet.parameters():
                 param.requires_grad = True
                 trainable_param_count += param.numel()

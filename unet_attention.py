@@ -46,36 +46,41 @@ class TimeEmbedding(nn.Module):
 
 
 class ConditionEmbedding(nn.Module):
-    def __init__(self, n_channels: int, condition_dim: int):
-        """
-        Initialize the ConditionEmbedding module.
-
-        Args:
-            n_channels (int): Number of channels for the embedding.
-            condition_dim (int): Dimension of the condition.
-        """
+    def __init__(self, n_channels: int, condition_dim: int, emb_type: str = "linear"):
         super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(condition_dim, n_channels * 4),
-            nn.SiLU(),
-            nn.Linear(n_channels * 4, n_channels * 4),
-            nn.SiLU(),
-            nn.Linear(n_channels * 4, n_channels * 2),
-            nn.SiLU(),
-            nn.Linear(n_channels * 2, n_channels),
-        )
+        self.emb_type = emb_type
+        
+        if emb_type == "sinusoidal":
+            self.embedding_dim = n_channels // 2
+            self.model = nn.Sequential(
+                nn.Linear(condition_dim * self.embedding_dim * 2, n_channels * 4),
+                nn.SiLU(),
+                nn.Linear(n_channels * 4, n_channels * 4),
+                nn.SiLU(),
+                nn.Linear(n_channels * 4, n_channels) 
+            )
+        else:
+            self.model = nn.Sequential(
+                nn.Linear(condition_dim, n_channels * 4),
+                nn.SiLU(),
+                nn.Linear(n_channels * 4, n_channels * 4),
+                nn.SiLU(),
+                nn.Linear(n_channels * 4, n_channels * 2),
+                nn.SiLU(),
+                nn.Linear(n_channels * 2, n_channels),
+            )
         
     def forward(self, c: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the ConditionEmbedding module.
-
-        Args:
-            c (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Output tensor after embedding.
-        """
-        return self.model(c)
+        if self.emb_type == "sinusoidal":
+            half_dim = self.embedding_dim
+            emb = math.log(10_000) / (half_dim - 1)
+            emb = torch.exp(torch.arange(half_dim, device=c.device) * -emb)
+            emb = c.unsqueeze(-1) * emb.unsqueeze(0).unsqueeze(0)
+            emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+            emb = emb.view(c.shape[0], -1)
+            return self.model(emb)
+        else:
+            return self.model(c)
 
 
 class SelfAttention(nn.Module):
@@ -149,12 +154,6 @@ class CrossAttention(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    """
-    ### Residual block
-    A residual block has two convolution layers with group normalization.
-    Each resolution is processed with two residual blocks.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -162,17 +161,11 @@ class ResidualBlock(nn.Module):
         time_channels: int,
         n_groups: int = 8,
         dropout: float = 0.1,
+        condition_injection: str = "add",
     ):
-        """
-        * `in_channels` is the number of input channels
-        * `out_channels` is the number of input channels
-        * `time_channels` is the number channels in the time step ($t$) embeddings
-        * `n_groups` is the number of groups for [group normalization](../../normalization/group_norm/index.html)
-        * `dropout` is the dropout rate
-        """
         super().__init__()
+        self.condition_injection = condition_injection
 
-        # Group normalization and the first convolution layer
         self.conv1 = nn.Sequential(
             nn.GroupNorm(n_groups, in_channels),
             nn.SiLU(),
@@ -180,126 +173,73 @@ class ResidualBlock(nn.Module):
             nn.Dropout3d(dropout) if dropout > 0.0 else nn.Identity(),
         )
 
-        # Group normalization and the second convolution layer
         self.conv2 = nn.Sequential(
             nn.GroupNorm(n_groups, out_channels),
             nn.SiLU(),
-            # nn.Dropout3d(dropout),
             nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
         )
 
-        # If the number of input channels is not equal to the number of output channels we have to
-        # project the shortcut connection
         if in_channels != out_channels:
             self.shortcut = nn.Conv3d(in_channels, out_channels, kernel_size=1)
         else:
             self.shortcut = nn.Identity()
 
-        # Linear layer for time embeddings
         self.time_emb = nn.Sequential(nn.SiLU(), nn.Linear(time_channels, out_channels))
-
         self.dropout = nn.Dropout3d(dropout)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """
-        * `x` has shape `[batch_size, in_channels, height, width,depth]`
-        * `t` has shape `[batch_size, time_channels]`
-        """
-        # First convolution layer
+        # Initialize the FiLM adapter if toggled
+        if self.condition_injection == "film":
+            self.cond_adapter = nn.Sequential(
+                nn.SiLU(), 
+                nn.Linear(time_channels, out_channels * 2) 
+            )
+            nn.init.zeros_(self.cond_adapter[1].weight)
+            nn.init.zeros_(self.cond_adapter[1].bias)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
         h = self.conv1(x)
         time = self.time_emb(t)
-        # Add time embeddings
         h += time[:, :, None, None, None]
-        # Second convolution layer
-        h = self.conv2(h)
 
-        # Add the shortcut connection and return
+        # Apply FiLM if toggled and condition exists
+        if self.condition_injection == "film" and c is not None:
+            cond_vec = self.cond_adapter(c)
+            scale, shift = cond_vec.chunk(2, dim=1)
+            h = h * (1 + scale[:, :, None, None, None]) + shift[:, :, None, None, None]
+
+        h = self.conv2(h)
         return h + self.shortcut(x)
 
-
 class DownBlock(nn.Module):
-    """
-    ### Down block
-    This combines `ResidualBlock` and `AttentionBlock`. These are used in the first half of U-Net at each resolution.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        time_channels: int,
-        has_attn: bool,
-        dropout: float,
-    ):
+    def __init__(self, in_channels: int, out_channels: int, time_channels: int, has_attn: bool, dropout: float, condition_injection: str = "add"):
         super().__init__()
-        self.res = ResidualBlock(
-            in_channels, out_channels, time_channels, dropout=dropout
-        )
-        if has_attn:
-            self.attn = SelfAttention(out_channels)
-        else:
-            self.attn = nn.Identity()
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        x = self.res(x, t)
+        self.res = ResidualBlock(in_channels, out_channels, time_channels, dropout=dropout, condition_injection=condition_injection)
+        self.attn = SelfAttention(out_channels) if has_attn else nn.Identity()
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
+        x = self.res(x, t, c)
         x = self.attn(x)
-
         return x
-
 
 class UpBlock(nn.Module):
-    """
-    ### Up block
-    This combines `ResidualBlock` and `AttentionBlock`. These are used in the second half of U-Net at each resolution.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        time_channels: int,
-        has_attn: bool,
-        dropout: float,
-    ):
+    def __init__(self, in_channels: int, out_channels: int, time_channels: int, has_attn: bool, dropout: float, condition_injection: str = "add"):
         super().__init__()
-        # The input has `in_channels + out_channels` because we concatenate the output of the same resolution
-        # from the first half of the U-Net
-        self.res = ResidualBlock(
-            in_channels + out_channels, out_channels, time_channels, dropout=dropout
-        )
-        if has_attn:
-            self.attn = SelfAttention(out_channels)
-        else:
-            self.attn = nn.Identity()
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        x = self.res(x, t)
+        self.res = ResidualBlock(in_channels + out_channels, out_channels, time_channels, dropout=dropout, condition_injection=condition_injection)
+        self.attn = SelfAttention(out_channels) if has_attn else nn.Identity()
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
+        x = self.res(x, t, c)
         x = self.attn(x)
         return x
 
-
 class MiddleBlock(nn.Module):
-    """
-    ### Middle block
-    It combines a `ResidualBlock`, `AttentionBlock`, followed by another `ResidualBlock`.
-    This block is applied at the lowest resolution of the U-Net.
-    """
-
-    def __init__(
-        self, n_channels: int, time_channels: int, middle_attn=False,
-    ):
+    def __init__(self, n_channels: int, time_channels: int, middle_attn=False, condition_injection: str = "add"):
         super().__init__()
-        self.res1 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0)
-        self.res2 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0)
-        if middle_attn:
-            self.attn = SelfAttention(n_channels)
-        else:
-            self.attn = nn.Identity()
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        x = self.res1(x, t)
+        self.res1 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0, condition_injection=condition_injection)
+        self.res2 = ResidualBlock(n_channels, n_channels, time_channels, dropout=0, condition_injection=condition_injection)
+        self.attn = SelfAttention(n_channels) if middle_attn else nn.Identity()
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
+        x = self.res1(x, t, c)
         x = self.attn(x)
-        x = self.res2(x, t)
+        x = self.res2(x, t, c)
         return x
 
 
@@ -316,7 +256,7 @@ class Upsample(nn.Module):
             nn.Conv3d(n_channels, n_channels, kernel_size=3, stride=1, padding="same"),
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor,c: torch.Tensor = None) -> torch.Tensor:
         # `t` is not used, but it's kept in the arguments because for the attention layer function signature
         # to match with `ResidualBlock`.
         _ = t
@@ -332,7 +272,7 @@ class Downsample(nn.Module):
         super().__init__()
         self.conv = nn.Conv3d(n_channels, n_channels, 3, 2, 1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
         # `t` is not used, but it's kept in the arguments because for the attention layer function signature
         # to match with `ResidualBlock`.
         _ = t
@@ -340,165 +280,103 @@ class Downsample(nn.Module):
 
 
 class UNet(nn.Module):
-    """
-    ## U-Net
-    """
-
     def __init__(
-        self,
-        image_channels: int = 1,
-        n_channels: int = 64,
-        ch_mults=(1, 2, 2, 4),
-        is_attn=(False, False, False, True),
-        n_blocks: int = 2,
-        middle_attn=True,
-        dropout=0.05,
-        condition_dim=None,
-        cross_attn=False,
+        self, image_channels: int = 1, n_channels: int = 64, ch_mults=(1, 2, 2, 4),
+        is_attn=(False, False, False, True), n_blocks: int = 2, middle_attn=True,
+        dropout=0.05, condition_dim=None, cross_attn=False,
+        condition_emb_type="linear", condition_injection="add"
     ):
-        """
-        * `image_channels` is the number of channels in the image. $3$ for RGB.
-        * `n_channels` is number of channels in the initial feature map that we transform the image into
-        * `ch_mults` is the list of channel numbers at each resolution. The number of channels is `ch_mults[i] * n_channels`
-        * `is_attn` is a list of booleans that indicate whether to use attention at each resolution
-        * `n_blocks` is the number of `UpDownBlocks` at each resolution
-        * `middle_attn` for whether you want attention block
-        """
         super(UNet, self).__init__()
+        self.condition_injection = condition_injection
 
         if (type(dropout) == float) or (type(dropout) == int):
             dropout = [dropout] * len(ch_mults)
-        else:
-            pass
-
-        # Number of resolutions
         n_resolutions = len(ch_mults)
 
-        # Project image into feature map
-        self.image_proj = nn.Conv3d(
-            image_channels, n_channels, kernel_size=3, padding=1
-        )
-
-        # Time embedding layer. Time embedding has `n_channels * 4` channels
+        self.image_proj = nn.Conv3d(image_channels, n_channels, kernel_size=3, padding=1)
         self.time_emb = TimeEmbedding(n_channels * 4)
 
-        # Conditional Embedding. Conditional Embedding currently dense layers to `n_channels * 4`
-
         if condition_dim is not None:
-            self.condition_emb = ConditionEmbedding(n_channels * 4, condition_dim)
-            self.cross_attn = (
-                CrossAttention(n_channels, n_channels * 4)
-                if cross_attn is True
-                else None
-            )
+            self.condition_emb = ConditionEmbedding(n_channels * 4, condition_dim, emb_type=condition_emb_type)
+            self.cross_attn = CrossAttention(n_channels, n_channels * 4) if cross_attn else None
             
-            # 1. Define the layer
-            self.time_concat = nn.Linear(n_channels * 4, n_channels * 4)
-            with torch.no_grad():
-                # Start with everything at zero
-                self.time_concat.weight.zero_()
-                self.time_concat.bias.zero_()
-
+            # Baseline uses addition mapping
+            if self.condition_injection == "add":
+                self.time_concat = nn.Linear(n_channels * 4, n_channels * 4)
+                with torch.no_grad():
+                    self.time_concat.weight.zero_()
+                    self.time_concat.bias.zero_()
+            else:
+                self.time_concat = None
         else:
             self.condition_emb = None
             self.cross_attn = None
             self.time_concat = None
 
-        # #### First half of U-Net - decreasing resolution
         down = []
-        # Number of channels
         out_channels = in_channels = n_channels
-        # For each resolution
         for i, drop_val in zip(range(n_resolutions), dropout):
-            # Number of output channels at this resolution
             out_channels = in_channels * ch_mults[i]
-            # Add `n_blocks`
             for _ in range(n_blocks):
-                down.append(
-                    DownBlock(
-                        in_channels, out_channels, n_channels * 4, is_attn[i], drop_val
-                    )
-                )
+                down.append(DownBlock(in_channels, out_channels, n_channels * 4, is_attn[i], drop_val, condition_injection))
                 in_channels = out_channels
-            # Down sample at all resolutions except the last
             if i < n_resolutions - 1:
                 down.append(Downsample(in_channels))
-
-        # Combine the set of modules
         self.down = nn.ModuleList(down)
 
-        # Middle block
-        self.middle = MiddleBlock(out_channels, n_channels * 4, middle_attn)
+        self.middle = MiddleBlock(out_channels, n_channels * 4, middle_attn, condition_injection)
 
-        # #### Second half of U-Net - increasing resolution
         up = []
-        # Number of channels
         in_channels = out_channels
-        # For each resolution
         for i, drop_val in zip(reversed(range(n_resolutions)), reversed(dropout)):
-            # `n_blocks` at the same resolution
             out_channels = in_channels
             for _ in range(n_blocks):
-                up.append(
-                    UpBlock(
-                        in_channels, out_channels, n_channels * 4, is_attn[i], drop_val
-                    )
-                )
-            # Final block to reduce the number of channels
+                up.append(UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i], drop_val, condition_injection))
             out_channels = in_channels // ch_mults[i]
-            up.append(UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i], 0))
+            up.append(UpBlock(in_channels, out_channels, n_channels * 4, is_attn[i], 0, condition_injection))
             in_channels = out_channels
-            # Up sample at all resolutions except last
             if i > 0:
                 up.append(Upsample(in_channels))
-
-        # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        # Final normalization and convolution layer
         self.norm = nn.GroupNorm(8, n_channels)
         self.act = nn.SiLU()
         self.final = nn.Conv3d(in_channels, image_channels, kernel_size=3, padding=1)
 
-    def forward(
-        self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None
-    ) -> torch.Tensor:
-        """
-        * `x` has shape `[batch_size, in_channels, height, width,depth]`
-        * `t` has shape `[batch_size]`
-        """
-
-        # Get time-step embeddings
+    def forward(self, x: torch.Tensor, t: torch.Tensor, c: torch.Tensor = None) -> torch.Tensor:
         t = self.time_emb(t)
-
-        # Get image projection
         x = self.image_proj(x)
 
         if (self.condition_emb is not None) and (c is not None):
-            c = self.condition_emb(c)
-            t = t + self.time_concat(c)
-            if (self.cross_attn is not None) and (c is not None):
-                x = self.cross_attn(x, c)
+            c_emb = self.condition_emb(c)
+            
+            if self.condition_injection == "add":
+                t = t + self.time_concat(c_emb)
+                c_pass = None # It's folded into 't' now
+            else:
+                c_pass = c_emb # Pass separately for FiLM
 
-        # `h` will store outputs at each resolution for skip connection
+            if (self.cross_attn is not None):
+                x = self.cross_attn(x, c_emb)
+        else:
+            c_pass = None
+
         h = [x]
-        # First half of U-Net
         for m in self.down:
-            x = m(x, t)
+            if isinstance(m, Downsample):
+                x = m(x, t, c_pass)
+            else:
+                x = m(x, t, c_pass)
             h.append(x)
 
-        # Middle (bottom)
-        x = self.middle(x, t)
+        x = self.middle(x, t, c_pass)
 
-        # Second half of U-Net
         for m in self.up:
             if isinstance(m, Upsample):
-                x = m(x, t)
+                x = m(x, t, c_pass)
             else:
-                # Get the skip connection from first half of U-Net and concatenate
                 s = h.pop()
                 x = torch.cat((x, s), dim=1)
-                x = m(x, t)
+                x = m(x, t, c_pass)
 
-        # Final normalization and convolution
         return self.final(self.act(self.norm(x)))

@@ -167,14 +167,24 @@ class BuildDataset(Dataset):
             apply_symmetry (bool): Whether to apply symmetry.
         """
         self.data_path = data_path
-
-        if len(characteristics) != 0:
-            self.cond_data = pd.read_csv(conditional_csv)[
-                ["#filename", *characteristics]
-            ]
-        else:
-            self.cond_data = pd.read_csv(conditional_csv)[["#filename"]]
         self.apply_sym = apply_symmetry
+
+        # Read the CSV once to save memory and time
+        df = pd.read_csv(conditional_csv)
+
+        # 1. Parse Conditions
+        if len(characteristics) != 0:
+            self.cond_data = df[["#filename", *characteristics]]
+        else:
+            self.cond_data = df[["#filename"]]
+
+        # 2. Parse Weights
+        if "weights" in df.columns:
+            # Extract just the values as a 1D float32 numpy array
+            self.weights = df["weights"].values.astype(np.float32)
+        else:
+            # Default to an array of 1.0s matching the dataset size
+            self.weights = np.ones(df.shape[0], dtype=np.float32)
 
     def __len__(self) -> int:
         """
@@ -214,15 +224,8 @@ class BuildDataset(Dataset):
         
         return subimage
 
-    def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get an item from the dataset.
-
-        Args:
-            idx (int): Index of the item.
-        Returns:
-            tuple: Subimage and volume fractions.
-        """
+    def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Get filename and condition
         filename = self.cond_data.iloc[idx]["#filename"]
         if self.cond_data.shape[1] > 1:
             conditions = self.cond_data.iloc[idx, 1:].values.astype(np.float32)
@@ -230,6 +233,10 @@ class BuildDataset(Dataset):
         else:
             conditions = None
 
+        # --- NEW: Get Custom Weight ---
+        weight = torch.tensor(self.weights[idx], dtype=torch.float32)
+
+        # Load and transform image
         filepath = os.path.expanduser(os.path.join(self.data_path, filename))
         subimage = np.load(filepath)
         subimage = torch.tensor(subimage)
@@ -242,7 +249,10 @@ class BuildDataset(Dataset):
         # Ensure that the subimage is 4D tensor
         subimage = torch.squeeze(subimage)
         subimage = torch.unsqueeze(subimage, 0)
-
         assert subimage.dim() == 4, "Subimage must be a 4D tensor (C, H, W, D)"
 
-        return (subimage, conditions) if conditions is not None else subimage
+        # Return the 3-element tuple if conditional, otherwise just return image and weight
+        if conditions is not None:
+            return (subimage, conditions, weight)
+        else:
+            return (subimage, weight)

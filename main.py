@@ -85,6 +85,9 @@ def main(config):
         config.training.ema_decay,  # Add this line
         config.training.validate_with_ema,  # Add this line
         config.model.condition_fn,
+        condition_emb_type=config.model.get("condition_emb_type", "linear"),
+        condition_injection=config.model.get("condition_injection", "add"),
+        use_loss_weighting=config.model.get("use_loss_weighting", False)
     )
 
     if config.logging.uncond_path is not None and config.logging.ckpt is None:
@@ -279,7 +282,7 @@ class MicroData(LightningDataModule):
             self.data_train,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=False,
             shuffle=True,
         )
 
@@ -294,7 +297,7 @@ class MicroData(LightningDataModule):
             self.data_val,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=False,
             shuffle=True,
         )
 
