@@ -2,6 +2,8 @@ import os
 import argparse
 import numpy as np
 from typing import Optional, List, Union, Dict, Any
+from tqdm.auto import tqdm
+
 import torch
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torch import nn
@@ -22,6 +24,72 @@ class DiffusionInference(Diffusion):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        
+        
+    @torch.no_grad()
+    def generate_large_volume(
+        self, 
+        model=None, 
+        sample_shape=(1, 1, 200, 200, 200), 
+        window_size=96, 
+        stride=48, 
+        inf_timesteps=1000,
+        condition=None,
+        w=0.0
+    ):
+        
+        if model is None:
+            if self.ema and self.hparams.validate_with_ema:
+                print("Using EMA model")
+                self.ema.apply_shadow()
+                model = self.ema.model.eval()
+            else:
+                print("Using standard Unet")
+                model = self.unet.eval()
+
+        device = next(model.parameters()).device
+        x = torch.randn(sample_shape).to(device)
+        self.noise_scheduler.set_timesteps(inf_timesteps)
+
+        # Helper function to guarantee edge-to-edge coverage
+        def get_patch_indices(dim_size, w_size, s):
+            indices = list(range(0, dim_size - w_size + 1, s))
+            # If the last patch doesn't exactly hit the edge, force a patch at the boundary
+            if not indices or indices[-1] + w_size < dim_size:
+                indices.append(dim_size - w_size)
+            return sorted(list(set(indices))) # Sort and remove potential duplicates
+
+        x_indices = get_patch_indices(sample_shape[2], window_size, stride)
+        y_indices = get_patch_indices(sample_shape[3], window_size, stride)
+        z_indices = get_patch_indices(sample_shape[4], window_size, stride)
+
+        for t in tqdm(self.noise_scheduler.timesteps):
+            combined_noise = torch.zeros_like(x)
+            count_mask = torch.zeros_like(x)
+            
+            for i in x_indices:
+                for j in y_indices:
+                    for k in z_indices:
+                        
+                        patch = x[:, :, i:i+window_size, j:j+window_size, k:k+window_size]
+                        ts = torch.full((patch.shape[0],), t, device=device, dtype=torch.long)
+                        
+                        if condition is not None:
+                            noise_cond = model(patch, ts, condition)
+                            noise_uncond = model(patch, ts, None)
+                            eps = ((1 + w) * noise_cond) - (w * noise_uncond)
+                        else:
+                            eps = model(patch, ts, None)
+                        
+                        combined_noise[:, :, i:i+window_size, j:j+window_size, k:k+window_size] += eps
+                        count_mask[:, :, i:i+window_size, j:j+window_size, k:k+window_size] += 1
+
+            # Clamp mask to 1 to prevent any stray division by zero
+            combined_noise /= count_mask.clamp(min=1)
+            
+            x = self.noise_scheduler.step(combined_noise, t, x).prev_sample
+
+        return x.cpu().numpy()
 
     @torch.no_grad()
     def predict_step(self, batch, batch_idx):
@@ -83,15 +151,25 @@ class DiffusionInference(Diffusion):
 
         if not config["use_ema"]:
             self.hparams.validate_with_ema = False
-
-        # Generate samples
-        generated_samples = self.generate(
-            inf_timesteps=config["inf_timesteps"],
-            sample_shape=sample_shape,
-            condition=processed_conditions,
-            w=config["w_guidance"],
-            noise=predetermined_noise,  # Pass predetermined noise
-        )
+        
+        noise = noise.to('cpu') # to remove noise from GPU
+        
+        if config["img_size"]<=96:
+            # Generate samples
+            generated_samples = self.generate(
+                inf_timesteps=config["inf_timesteps"],
+                sample_shape=sample_shape,
+                condition=processed_conditions,
+                w=config["w_guidance"],
+                noise=predetermined_noise,  # Pass predetermined noise
+            )
+        else:
+            generated_samples = self.generate_large_volume(
+                inf_timesteps=config["inf_timesteps"],
+                sample_shape=sample_shape,
+                condition=processed_conditions,
+                w=config["w_guidance"],
+            )
 
         # Ensure proper shape (add channel dim if squeezed)
         if config["channels"] == 1 and generated_samples.ndim == 4:
@@ -186,6 +264,7 @@ class DistributedSampleWriter(BasePredictionWriter):
             if os.path.exists(gpu_path):
                 gpu_data = np.load(gpu_path)
                 if "samples" in gpu_data and gpu_data["samples"].size > 0:
+                    print('Shape of the GPU DATA: ',gpu_data['samples'].shape)
                     all_samples.append(gpu_data["samples"])
                     if "conditions" in gpu_data:
                         all_conditions.append(gpu_data["conditions"])

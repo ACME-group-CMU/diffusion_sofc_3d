@@ -22,13 +22,14 @@ CHECKPOINT_TYPE=${CHECKPOINT_TYPE:-${2:-"ALL"}}
 NUM_SAMPLES=${NUM_SAMPLES:-${3:-96}}
 BATCH_SIZE_PER_GPU=${BATCH_SIZE_PER_GPU:-${4:-12}}
 USE_EMA=${USE_EMA:-${5:-"true"}}
+IMG_SIZE=${IMG_SIZE:-${6:-96}}
 
 # Optional parameters via environment variables (unchanged)
 CONDITION_FILE=${CONDITION_FILE:-""}
 NOISE_FILE=${NOISE_FILE:-""}
 OUTPUT_DIR=${OUTPUT_DIR:-"./generated_samples/filtered_dataset/version_${VERSION}_${NUM_SAMPLES}samples_ema_${USE_EMA}/"}
 INF_TIMESTEPS=${INF_TIMESTEPS:-1000}
-W_GUIDANCE=${W_GUIDANCE:-3.0}
+W_GUIDANCE=${W_GUIDANCE:-0.0}
 GPUS=${GPUS:-8}
 NUM_WORKERS=${NUM_WORKERS:-8}
 
@@ -47,7 +48,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # --- Checkpoint Discovery ---
-BASE_DIR="./results/lightning_logs/conditional_test/version_${VERSION}/checkpoints"
+BASE_DIR="./results/lightning_logs/filtered_dataset/check_max/version_${VERSION}/checkpoints"
 
 if [ ! -d "$BASE_DIR" ]; then
    echo "Error: Checkpoint directory not found: $BASE_DIR"
@@ -128,6 +129,7 @@ INFERENCE_ARGS="$INFERENCE_ARGS --w $W_GUIDANCE"
 INFERENCE_ARGS="$INFERENCE_ARGS --gpus $GPUS"
 INFERENCE_ARGS="$INFERENCE_ARGS --num_nodes $SLURM_NNODES"
 INFERENCE_ARGS="$INFERENCE_ARGS --num_workers $NUM_WORKERS"
+INFERENCE_ARGS="$INFERENCE_ARGS --img_size $IMG_SIZE"
 
 if [ "$USE_EMA" = "true" ]; then
    INFERENCE_ARGS="$INFERENCE_ARGS --use_ema"

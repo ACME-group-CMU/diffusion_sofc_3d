@@ -511,8 +511,10 @@ class Diffusion(LightningModule):
 
             residual_noise = residual_noise.type_as(x)
             x = self.noise_scheduler.step(residual_noise, i, x).prev_sample
-
-        x = x.cpu().numpy().squeeze()
+        
+        print(x.shape)
+        x = x.cpu().numpy().squeeze(1)
+        print(x.shape)
 
         if self.ema and self.hparams.validate_with_ema:
             self.ema.restore()
