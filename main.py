@@ -11,7 +11,7 @@ import glob
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader,WeightedRandomSampler
 
 from pytorch_lightning import (
     LightningDataModule,
@@ -55,6 +55,7 @@ def main(config):
         apply_sym=config.data.apply_sym,
         batch_size=config.training.batch_size,
         num_workers=config.training.n_cpu,
+        weighting=config.model.get("weighted_sampling", False),
     )
 
     model = Diffusion(
@@ -234,6 +235,7 @@ class MicroData(LightningDataModule):
         batch_size: int = 32,
         num_workers: int = 1,
         apply_sym: bool = True,
+        weighting = False,
     ):
         """
         Initialize the MicroData module.
@@ -253,6 +255,7 @@ class MicroData(LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.apply_symmetry = apply_sym
+        self.weighting = weighting
 
     def setup(self, stage: typing.Optional[str] = None):
         if stage == "fit" or stage is None:
@@ -260,13 +263,13 @@ class MicroData(LightningDataModule):
 
             self.data_train = BuildDataset(
                 data_path=self.data_dir,
-                conditional_csv=os.path.join(self.data_dir, "train.csv"),
+                conditional_csv=os.path.join(self.data_dir, "train_weighted.csv"),
                 characteristics=characteristics,
                 apply_symmetry=self.apply_symmetry,
             )
             self.data_val = BuildDataset(
                 data_path=self.data_dir,
-                conditional_csv=os.path.join(self.data_dir, "validation.csv"),
+                conditional_csv=os.path.join(self.data_dir, "validation_weighted.csv"),
                 characteristics=characteristics,
                 apply_symmetry=self.apply_symmetry,
             )
@@ -278,13 +281,34 @@ class MicroData(LightningDataModule):
         Returns:
             DataLoader: Training dataloader.
         """
-        return DataLoader(
-            self.data_train,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=False,
-            shuffle=True,
-        )
+        
+        # 1. Extract the weights array that your BuildDataset already parsed
+        if self.weighting:
+            dataset_weights = torch.tensor(self.data_train.weights, dtype=torch.float32)
+        
+            # 2. Initialize the sampler
+            sampler = WeightedRandomSampler(
+                weights=dataset_weights,
+                num_samples=len(dataset_weights),
+                replacement=True
+            )
+            
+            return DataLoader(
+                self.data_train, 
+                batch_size=self.batch_size, 
+                num_workers=self.num_workers,
+                pin_memory=False,
+                sampler=sampler)
+            
+        else:                 
+        
+            return DataLoader(
+                self.data_train,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                pin_memory=False,
+                shuffle=True,
+            )
 
     def val_dataloader(self) -> DataLoader:
         """

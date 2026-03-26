@@ -548,7 +548,7 @@ class Diffusion(LightningModule):
             use_ema (bool): If True, load EMA shadow weights (recommended). 
                            If False, load regular training weights.
         """
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path,map_location='cpu')
         state_dict = checkpoint["state_dict"]
         
         # Determine which weights to load

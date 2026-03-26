@@ -14,6 +14,8 @@ from pytorch_lightning.callbacks import BasePredictionWriter
 from diffusion import Diffusion
 import warnings
 
+import time
+
 warnings.filterwarnings("ignore")
 
 class DiffusionInference(Diffusion):
@@ -105,7 +107,7 @@ class DiffusionInference(Diffusion):
         config = self.inference_config
 
         # Use existing get_input method to parse batch format
-        noise, condition = self.get_input(batch)
+        noise, condition,_ = self.get_input(batch)
         
         if hasattr(self, 'global_rank'):
             rank = self.global_rank
@@ -193,7 +195,7 @@ class DistributedSampleWriter(BasePredictionWriter):
         super().__init__(write_interval="epoch")
         self.output_path = output_path
         self.metadata = metadata
-        self.temp_dir = os.path.join(os.path.dirname(output_path), "temp_predictions")
+        self.temp_dir = os.path.join(os.path.dirname(output_path), f"temp_predictions_{os.path.basename(output_path).replace('.npz', '')}")
 
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
         """
@@ -230,6 +232,13 @@ class DistributedSampleWriter(BasePredictionWriter):
             save_data["conditions"] = all_gpu_conditions
 
         np.savez_compressed(temp_file, **save_data)
+
+        # Force flush to disk before barrier (critical for NFS filesystems)
+        with open(temp_file, 'rb') as f:
+            os.fsync(f.fileno())
+
+        # Small sleep to allow NFS metadata to propagate
+        time.sleep(2)
 
         # Barrier to ensure all GPUs have saved their files
         if hasattr(trainer.strategy, "barrier"):

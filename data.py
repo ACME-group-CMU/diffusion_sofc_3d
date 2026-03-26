@@ -175,13 +175,15 @@ class BuildDataset(Dataset):
         # 1. Parse Conditions
         if len(characteristics) != 0:
             self.cond_data = df[["#filename", *characteristics]]
+            self.cond_array = df[characteristics].values.astype(np.float32).copy()
         else:
             self.cond_data = df[["#filename"]]
+            self.cond_array = None
 
         # 2. Parse Weights
-        if "weights" in df.columns:
+        if "weight" in df.columns:
             # Extract just the values as a 1D float32 numpy array
-            self.weights = df["weights"].values.astype(np.float32)
+            self.weights = df["weight"].values.astype(np.float32)
         else:
             # Default to an array of 1.0s matching the dataset size
             self.weights = np.ones(df.shape[0], dtype=np.float32)
@@ -227,9 +229,8 @@ class BuildDataset(Dataset):
     def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Get filename and condition
         filename = self.cond_data.iloc[idx]["#filename"]
-        if self.cond_data.shape[1] > 1:
-            conditions = self.cond_data.iloc[idx, 1:].values.astype(np.float32)
-            conditions = torch.tensor(conditions, dtype=torch.float32)
+        if self.cond_array is not None:
+            conditions = torch.tensor(self.cond_array[idx], dtype=torch.float32)
         else:
             conditions = None
 

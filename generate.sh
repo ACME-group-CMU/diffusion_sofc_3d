@@ -23,15 +23,17 @@ NUM_SAMPLES=${NUM_SAMPLES:-${3:-96}}
 BATCH_SIZE_PER_GPU=${BATCH_SIZE_PER_GPU:-${4:-12}}
 USE_EMA=${USE_EMA:-${5:-"true"}}
 IMG_SIZE=${IMG_SIZE:-${6:-96}}
+QUARTILE=${QUARTILE:-${7:-""}}
 
 # Optional parameters via environment variables (unchanged)
 CONDITION_FILE=${CONDITION_FILE:-""}
 NOISE_FILE=${NOISE_FILE:-""}
-OUTPUT_DIR=${OUTPUT_DIR:-"./generated_samples/filtered_dataset/version_${VERSION}_${NUM_SAMPLES}samples_ema_${USE_EMA}/"}
+OUTPUT_DIR=${OUTPUT_DIR:-"./generated_samples/filtered_dataset/version_${VERSION}_${NUM_SAMPLES}samples_ema_${USE_EMA}_conditional"}
 INF_TIMESTEPS=${INF_TIMESTEPS:-1000}
-W_GUIDANCE=${W_GUIDANCE:-0.0}
+W_GUIDANCE=${W_GUIDANCE:-3.0}
 GPUS=${GPUS:-8}
 NUM_WORKERS=${NUM_WORKERS:-8}
+STEP=${STEP:-""}
 
 # --- Validation ---
 if [ "$USE_EMA" != "true" ] && [ "$USE_EMA" != "false" ]; then
@@ -39,8 +41,8 @@ if [ "$USE_EMA" != "true" ] && [ "$USE_EMA" != "false" ]; then
    exit 1
 fi
 
-if ! [[ "$CHECKPOINT_TYPE" =~ ^(best_val|best_train|last|ALL)$ ]]; then
-   echo "Error: CHECKPOINT_TYPE must be one of: best_val, best_train, last, ALL"
+if ! [[ "$CHECKPOINT_TYPE" =~ ^(best_val|best_train|last|ALL|step)$ ]]; then
+   echo "Error: CHECKPOINT_TYPE must be one of: best_val, best_train, last, ALL, step"
    exit 1
 fi
 
@@ -48,7 +50,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # --- Checkpoint Discovery ---
-BASE_DIR="./results/lightning_logs/filtered_dataset/check_max/version_${VERSION}/checkpoints"
+BASE_DIR="./results/lightning_logs/version_${VERSION}/checkpoints"
 
 if [ ! -d "$BASE_DIR" ]; then
    echo "Error: Checkpoint directory not found: $BASE_DIR"
@@ -84,6 +86,9 @@ case $CHECKPOINT_TYPE in
        ;;
    "last")
        CHECKPOINT_PATH="$BASE_DIR/last.ckpt"
+       ;;
+   "step")
+       CHECKPOINT_PATH=$(find "$BASE_DIR" -name "*step=${STEP}*" -o -name "*step_${STEP}*" -type f | head -1)
        ;;
    "ALL")
        CHECKPOINT_LIST=$(find "$BASE_DIR" -name "*.ckpt" -type f | \
@@ -173,7 +178,7 @@ if [ "$CHECKPOINT_TYPE" = "ALL" ]; then
    for CKPT in $CHECKPOINT_LIST; do
        CURRENT_CKPT=$((CURRENT_CKPT + 1))
        CKPT_BASENAME=$(basename "$CKPT" .ckpt)
-       OUTPUT_PATH="${OUTPUT_DIR}/version_${VERSION}_${CKPT_BASENAME}.npz"
+       OUTPUT_PATH="${OUTPUT_DIR}/version_${VERSION}_${CKPT_BASENAME}_${QUARTILE}.npz"
        
        echo "[$CURRENT_CKPT/$TOTAL_CKPTS] Processing: $(basename "$CKPT")"
        
@@ -202,8 +207,7 @@ if [ "$CHECKPOINT_TYPE" = "ALL" ]; then
 else
    # Single checkpoint
    CKPT_NAME=$(basename "$CHECKPOINT_PATH" .ckpt)
-   OUTPUT_PATH="${OUTPUT_DIR}/version_${VERSION}_${CKPT_NAME}.npz"
-   
+   OUTPUT_PATH="${OUTPUT_DIR}/version_${VERSION}_${CKPT_BASENAME}_${QUARTILE}.npz"
    echo "🎬 Processing: $(basename "$CHECKPOINT_PATH")"
    
    srun python3 inference.py \
